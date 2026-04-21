@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codepulse"
+version = "0.1.0"
+description = "Code intelligence tool — index repos into a knowledge graph and analyze blast radius"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pathspec>=0.12.0",
+    "tree-sitter>=0.23.0",
+    "tree-sitter-python>=0.23.0",
+    "tree-sitter-javascript>=0.23.0",
+    "tree-sitter-typescript>=0.23.0",
+    "tree-sitter-java>=0.23.0",
+    "tree-sitter-cpp>=0.23.0",
+]
+
+[project.scripts]
+codepulse = "codepulse.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["codepulse"]
