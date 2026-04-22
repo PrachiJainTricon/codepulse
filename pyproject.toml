@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codepulse"
+version = "0.1.0"
+description = "Code change impact analyser — blast radius, risk scoring, LLM explanation"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "langgraph>=0.2",
+    "langchain>=0.3",
+    "anthropic>=0.25",
+    "python-dotenv>=1.0",
+    "typing_extensions>=4.9",
+]
+
+[project.optional-dependencies]
+neo4j = ["neo4j>=5"]
+dev   = ["pytest>=8", "pytest-cov"]
+
+[project.scripts]
+codepulse = "codepulse.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codepulse*"]
