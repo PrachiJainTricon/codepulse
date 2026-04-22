@@ -1,0 +1,5 @@
+.env
+/codepulse/documentation
+/.venv
+__pycache__/
+*.pyc
