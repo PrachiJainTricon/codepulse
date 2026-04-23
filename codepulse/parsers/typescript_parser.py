@@ -15,6 +15,9 @@ Supported patterns:
   - ES6 imports + CommonJS require()
   - export statements (named, default, re-export)
   - call expressions (simple, member, this.method)
+
+Node type constants (from source tree_parser.py):
+  - JS/TS node types for import/class/method/function/call detection
 """
 
 from __future__ import annotations
@@ -34,6 +37,15 @@ from codepulse.parsers.base import (
     SymbolInfo,
     SymbolKind,
 )
+
+JS_TS_CLASS_TYPES = {"class_declaration"}
+JS_TS_METHOD_TYPES = {"method_definition"}
+JS_TS_FUNCTION_TYPES = {
+    "function_declaration",
+    "function_expression",
+    "arrow_function",
+}
+JS_TS_CALL_TYPES = {"call_expression", "new_expression"}
 
 # ── Tree-sitter language objects ──────────────────────────────
 _JS_LANGUAGE = Language(ts_javascript.language())
