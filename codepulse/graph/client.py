@@ -73,7 +73,32 @@ class Neo4jIngestion:
             self.client.run(query)
 
     def ingest_from_json(self, json_data: dict[str, Any]) -> dict[str, int]:
-        # Note: incremental mode not yet implemented
+        repo_node = GraphMapper.extract_repo_node(json_data)
+        commit_node = GraphMapper.extract_commit_node(json_data)
+        change_nodes = GraphMapper.extract_change_nodes(json_data)
+
+        if repo_node is not None:
+            self.client.run(
+                IngestQueries.UPSERT_REPO,
+                repo=[
+                    {
+                        "repo_id": repo_node.id,
+                        "repo_name": repo_node.name,
+                        "root": repo_node.path,
+                        "latest_commit_id": repo_node.latest_commit_id,
+                    }
+                ],
+            )
+
+        if commit_node is not None:
+            self.client.run(IngestQueries.UPSERT_COMMIT, commits=[asdict(commit_node)])
+
+        if change_nodes:
+            self._run_batched(
+                IngestQueries.UPSERT_CHANGES,
+                "changes",
+                [asdict(node) for node in change_nodes],
+            )
 
         file_nodes = GraphMapper.extract_file_nodes(json_data)
         symbol_nodes = GraphMapper.extract_symbol_nodes(json_data)
@@ -93,12 +118,18 @@ class Neo4jIngestion:
         self._run_batched(IngestQueries.CREATE_CONTAINS, "rels", contains)
         self._run_batched(IngestQueries.CREATE_CALLS, "rels", calls)
         self._run_batched(IngestQueries.CREATE_IMPORTS, "rels", imports)
+        self._run_batched(
+            IngestQueries.TOMBSTONE_DELETED_SYMBOLS,
+            "changes",
+            [asdict(node) for node in change_nodes],
+        )
 
         stats = {
             "files_processed": len(file_nodes),
             "files_updated": len(file_nodes),
             "symbols_created": len(symbol_nodes),
             "packages_created": len(package_nodes),
+            "changes_processed": len(change_nodes),
             "relationships_created": len(contains) + len(calls) + len(imports),
         }
         log.info(f"Neo4j ingestion complete: {stats}")
