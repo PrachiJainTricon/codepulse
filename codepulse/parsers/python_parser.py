@@ -10,6 +10,9 @@ Supported patterns:
   - import & from-import (with aliases and wildcards)
   - function calls (simple, attribute, self.method)
   - exports: top-level public (no leading underscore) symbols
+
+Node type constants (from source tree_parser.py):
+  - Python node types for import/class/method/function/call detection
 """
 
 from __future__ import annotations
@@ -28,7 +31,12 @@ from codepulse.parsers.base import (
     SymbolKind,
 )
 
-# ── Tree-sitter setup ────────────────────────────────────────
+PYTHON_IMPORT_TYPES = {"import_statement", "import_from_statement"}
+PYTHON_CLASS_TYPES = {"class_definition"}
+PYTHON_FUNCTION_TYPES = {"function_definition"}
+PYTHON_CALL_TYPES = {"call"}
+
+# Tree-sitter setup
 _LANGUAGE = Language(ts_python.language())
 _parser = Parser(_LANGUAGE)
 

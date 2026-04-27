@@ -8,7 +8,11 @@ language, and source bytes, it returns a ParseResult.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
 
+from codepulse.indexer.language_detector import detect_language
+from codepulse.indexer.repo_scanner import scan_repo
+from codepulse.indexer.snapshot import compute_hash
 from codepulse.logging import get_logger
 from codepulse.parsers import get_parser
 from codepulse.parsers.base import FileInfo, Language, ParseResult
@@ -63,3 +67,38 @@ def parse_file(
     except Exception as exc:
         log.warning(f"Parse error in {rel_path}: {exc}")
         return None
+
+
+def parse_all_files(repo_path: Path) -> list[ParseResult]:
+    """Parse every indexable file in `repo_path` (full scan, no snapshot cache)."""
+    results: list[ParseResult] = []
+    for abs_path, language in scan_repo(repo_path):
+        file_hash = compute_hash(abs_path)
+        parsed = parse_file(abs_path, repo_path, language, file_hash)
+        if parsed is not None:
+            results.append(parsed)
+    return results
+
+
+def parse_changed_files(
+    repo_path: Path,
+    rel_paths: Iterable[str],
+) -> list[ParseResult]:
+    """Parse a specific set of repo-relative files.
+
+    Files with unsupported languages or missing from disk are skipped silently.
+    """
+    results: list[ParseResult] = []
+    for rel_path in sorted(set(rel_paths)):
+        rel = Path(rel_path)
+        language = detect_language(rel)
+        if language is None:
+            continue
+        abs_path = repo_path / rel
+        if not abs_path.is_file():
+            continue
+        file_hash = compute_hash(abs_path)
+        parsed = parse_file(abs_path, repo_path, language, file_hash)
+        if parsed is not None:
+            results.append(parsed)
+    return results

@@ -4,6 +4,9 @@ Java parser using tree-sitter.
 Extracts class / interface / enum definitions, methods,
 constructor declarations, import statements, method invocations,
 and public exports from Java source files.
+
+Node type constants (from source tree_parser.py):
+  - Java node types for import/class/method/call detection
 """
 
 from __future__ import annotations
@@ -21,6 +24,12 @@ from codepulse.parsers.base import (
     SymbolInfo,
     SymbolKind,
 )
+
+JAVA_CLASS_TYPES = {"class_declaration", "interface_declaration", "enum_declaration"}
+JAVA_METHOD_TYPES = {"method_declaration"}
+JAVA_FUNCTION_TYPES = {"method_declaration"}
+JAVA_CALL_TYPES = {"method_invocation", "explicitconstructorinvocation"}
+JAVA_IMPORT_TYPES = {"import_declaration"}
 
 # ── Tree-sitter setup ────────────────────────────────────────
 _LANGUAGE = Language(ts_java.language())
