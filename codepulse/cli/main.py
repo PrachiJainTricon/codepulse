@@ -1,36 +1,49 @@
 """
-CodePulse CLI entry point.
+codepulse CLI — entry point.
 
-Commands:
-    codepulse diff [REF]   — blast-radius analysis for a git diff
-    codepulse ask  QUERY   — conversational query (stub for now)
+All sub-commands are registered here into the Typer app.
+Run with:
+    codepulse help
+    codepulse index
+    codepulse repos
+    codepulse remove /path/to/repo
 """
 
-from __future__ import annotations
-
 import typer
-from codepulse.cli.diff_cmd import diff_command
 
 app = typer.Typer(
     name="codepulse",
-    help="Understand the impact of your code changes.",
+    help="Code intelligence powered by graph analysis.",
     add_completion=False,
-    no_args_is_help=True,
+    invoke_without_command=True,
 )
 
-# Register as a named subcommand so `codepulse diff HEAD~1` works correctly.
-app.command("diff", help="Analyse blast radius and risk for a git diff.")(diff_command)
+# ── Register sub-commands ─────────────────────────────────────
+
+from codepulse.cli.index_cmd import index                    # noqa: E402
+from codepulse.cli.repos_cmd import repos_app, repos_remove  # noqa: E402
+
+app.command(name="index")(index)
+app.command(name="remove")(repos_remove)      # top-level shortcut
+app.add_typer(repos_app, name="repos")
 
 
-@app.command("version", hidden=True)
-def _version() -> None:
-    """Print version and exit."""
-    typer.echo("codepulse 0.1.0")
+@app.command(name="help", hidden=True)
+def show_help(ctx: typer.Context) -> None:
+    """Show this help message."""
+    # Walk up to root context to get the main help
+    root = ctx
+    while root.parent is not None:
+        root = root.parent
+    typer.echo(root.get_help())
 
 
-def main() -> None:
-    app()
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """Code intelligence powered by graph analysis."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
 
 
 if __name__ == "__main__":
-    main()
+    app()
