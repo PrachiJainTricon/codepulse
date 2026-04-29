@@ -111,6 +111,14 @@ class RepoStore:
         )
         self._conn.commit()
 
+    def touch(self, repo_root: str) -> None:
+        """Bump ``last_indexed`` without changing stats."""
+        self._conn.execute(
+            "UPDATE repos SET last_indexed = datetime('now') WHERE root_path = ?",
+            (repo_root,),
+        )
+        self._conn.commit()
+
     # ── Queries ───────────────────────────────────────────────
 
     def get_by_path(self, root_path: str) -> RepoRecord | None:
