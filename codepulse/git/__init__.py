@@ -9,6 +9,7 @@ from codepulse.git.diff_resolver import (
     ChangeEntry,
     git_diff_changes,
     git_initial_commit_changes,
+    git_working_tree_changes,
 )
 from codepulse.git.repo_identity import (
     get_current_repo,
@@ -25,5 +26,6 @@ __all__ = [
     "get_repo_name",
     "git_diff_changes",
     "git_initial_commit_changes",
+    "git_working_tree_changes",
     "resolve_commit_context",
 ]

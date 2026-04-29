@@ -49,6 +49,29 @@ def git_initial_commit_changes(repo_path: Path) -> list[ChangeEntry]:
     return changes
 
 
+def git_working_tree_changes(repo_path: Path) -> list[ChangeEntry]:
+    """Return changes in the working tree (unstaged + staged) vs HEAD."""
+    output = git_output(repo_path, "diff", "--name-status", "HEAD")
+    staged = git_output(repo_path, "diff", "--name-status", "--cached", "HEAD")
+    seen: dict[str, ChangeEntry] = {}
+    for raw in (output, staged):
+        if not raw:
+            continue
+        for line in raw.splitlines():
+            parts = [p for p in line.split("\t") if p]
+            if len(parts) < 2:
+                continue
+            status = parts[0][0]
+            change_type = _status_to_type(status)
+            if change_type is None:
+                continue
+            file_path = parts[-1].replace("\\", "/")
+            seen[file_path] = ChangeEntry(
+                file_path=file_path, status=status, type=change_type,
+            )
+    return list(seen.values())
+
+
 def _status_to_type(status: str) -> str | None:
     if status == "A":
         return "added"

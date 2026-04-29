@@ -76,43 +76,51 @@ source ~/.bashrc
 
 ### `codepulse index`
 
-Scan and parse a repository.
+Scan and parse a repository into SQLite.
 
 ```bash
-# Index the current directory
-cd /path/to/any-project
-codepulse index
-
-# Index a specific path
-codepulse index /path/to/repo
-
-# Force full re-index (ignore cache)
-codepulse index --full
+codepulse index                 # incremental index of current directory (skips unchanged files)
+codepulse index /path/to/repo   # index a specific path
+codepulse index --full           # force full re-index, ignore snapshot cache
 ```
 
-**Output:** A table showing per-file breakdown of symbols, imports, calls, and exports extracted.
+### `codepulse index --to-graph`
 
-### `codepulse graph`
-
-Manage the Neo4j graph (e.g. wipe the database during testing).
+Index and push changes to Neo4j.
 
 ```bash
-# Clear all nodes and relationships in Neo4j (does not affect local SQLite / repo registry)
-codepulse graph clear
+codepulse index --to-graph             # push only uncommitted working-tree changes to Neo4j
+codepulse index --full --to-graph      # full re-index + push ALL files to Neo4j
 ```
+
+- `--to-graph` alone pushes **only uncommitted edits** (staged + unstaged vs HEAD). Use this for day-to-day development.
+- `--full --to-graph` re-parses every file and pushes the entire codebase. Use this for **initial graph population** or to ensure Neo4j has the complete picture.
+- Existing Neo4j nodes are preserved via `MERGE` — incremental pushes upsert alongside existing data.
 
 ### `codepulse repos`
 
-Manage indexed repositories.
+List all indexed repositories with stats.
 
 ```bash
-# List all indexed repos
-codepulse repos
-codepulse repos list
+codepulse repos                 # show all registered repos (files, symbols, last indexed)
+codepulse repos list            # same as above
+```
 
-# Remove a repo from the registry
-codepulse remove              # removes current directory
-codepulse remove /path/to/repo
+### `codepulse remove`
+
+Unregister a repo from the local SQLite registry. Does **not** delete Neo4j data.
+
+```bash
+codepulse remove                # remove current directory from registry
+codepulse remove /path/to/repo  # remove a specific repo
+```
+
+### `codepulse graph clear`
+
+Wipe all nodes and relationships from Neo4j. Does **not** affect SQLite.
+
+```bash
+codepulse graph clear
 ```
 
 ### `codepulse help`
@@ -185,7 +193,28 @@ Neo4j browser: [http://localhost:7474](http://localhost:7474)
 codepulse index /path/to/your/project --to-graph
 ```
 
-In a **git** repo, `--to-graph` runs in **commit mode**: it parses the files that changed between `HEAD~1` and `HEAD` and tags graph data with the current commit id. In a **non-git** directory, it falls back to **snapshot mode** and parses the whole tree.
+### `codepulse index` and graph-related commands
+
+```bash
+codepulse index                         # incremental index to SQLite (skips unchanged files)
+codepulse index /path/to/repo           # index a specific path
+codepulse index --full                  # full re-index, ignore snapshot cache
+codepulse index --to-graph              # push uncommitted working-tree changes to Neo4j
+codepulse index --full --to-graph       # full re-index + push ALL files to Neo4j
+```
+
+- `--to-graph` pushes **only uncommitted edits** (staged + unstaged vs HEAD). Ideal for iterative development.
+- `--full --to-graph` re-parses every file and pushes the entire codebase. Use for **initial graph population**.
+- In a **non-git** directory, both modes parse the whole tree (snapshot mode).
+
+```bash
+codepulse graph clear                   # wipe every node + relationship in Neo4j
+```
+
+```bash
+codepulse repos                         # list indexed repos with stats
+codepulse remove /path/to/repo          # unregister + clear local snapshot (does NOT touch Neo4j)
+```
 
 ### Configuration (environment variables)
 

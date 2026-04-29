@@ -14,6 +14,7 @@ from codepulse.git.diff_resolver import (
     ChangeEntry,
     git_diff_changes,
     git_initial_commit_changes,
+    git_working_tree_changes,
 )
 
 

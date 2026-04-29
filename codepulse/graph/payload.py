@@ -23,6 +23,7 @@ from codepulse.git import (
     get_repo_name,
     resolve_commit_context,
 )
+from codepulse.git.diff_resolver import git_working_tree_changes
 from codepulse.indexer.parser_worker import (
     parse_all_files,
     parse_changed_files,
@@ -33,14 +34,19 @@ from codepulse.parsers.base import ImportInfo, ParseResult, SymbolInfo
 # ── Public API ────────────────────────────────────────────────
 
 
-def build_graph_payload(repo_path: Path) -> dict[str, Any]:
-    """Resolve commit context, parse files, and return the ingestion JSON."""
+def build_graph_payload(repo_path: Path, *, full: bool = False) -> dict[str, Any]:
+    """Resolve commit context, parse files, and return the ingestion JSON.
+
+    When *full* is True every tracked file is parsed regardless of the
+    last-commit diff – this is the expected behaviour for initial graph
+    population and for ``codepulse index --full --to-graph``.
+    """
     repo_path = repo_path.resolve()
     repo_id = get_repo_id(repo_path)
     repo_name = get_repo_name(repo_path)
     commit_ctx = resolve_commit_context(repo_path)
 
-    results = _parse_for_context(repo_path, commit_ctx)
+    results = _parse_for_context(repo_path, commit_ctx, full=full)
 
     return {
         "root": str(repo_path),
@@ -121,14 +127,20 @@ def to_legacy_file_result(
 def _parse_for_context(
     repo_path: Path,
     commit_ctx: CommitContext,
+    *,
+    full: bool = False,
 ) -> list[ParseResult]:
     """Decide between full-scan and diff-driven parsing based on mode."""
-    if commit_ctx.mode == "snapshot":
+    if full or commit_ctx.mode == "snapshot":
         return parse_all_files(repo_path)
 
+    # Incremental: only parse files with uncommitted working-tree changes.
+    # The last commit should already be in Neo4j from a prior --to-graph
+    # or --full --to-graph run.
+    wt_changes = git_working_tree_changes(repo_path)
     changed = {
         change.file_path
-        for change in commit_ctx.changes
+        for change in wt_changes
         if change.status in {"A", "M", "R", "C"}
     }
     if not changed:

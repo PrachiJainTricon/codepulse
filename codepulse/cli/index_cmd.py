@@ -63,17 +63,17 @@ def index(
     _print_report(report)
 
     if to_graph:
-        _push_to_graph(repo_path)
+        _push_to_graph(repo_path, full=full)
 
 
 # ── Graph push ────────────────────────────────────────────────
 
 
-def _push_to_graph(repo_path: Path) -> None:
+def _push_to_graph(repo_path: Path, *, full: bool = False) -> None:
     """Build the ingestion payload and stream it to Neo4j."""
     console.print("\n[bold]Pushing to Neo4j...[/]\n")
     try:
-        payload = build_graph_payload(repo_path)
+        payload = build_graph_payload(repo_path, full=full)
         _warn_if_snapshot(payload.get("mode"))
 
         with Neo4jIngestion() as ingestion:
