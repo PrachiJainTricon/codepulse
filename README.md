@@ -165,67 +165,40 @@ codepulse/
 
 > **Note:** The standalone `codepulse/README.md` was removed. Everything important from that file is merged into *this* document. The next section is the long-form **Neo4j / graph** reference; it stays self-contained and extends (it does not replace) the setup and architecture above.
 
-## Reference — migrated from `codepulse/README.md` (archived; file removed)
+## Neo4j / graph reference
 
-The sections below mirror the former project `README` so this file stays a single place for the full quick reference.
+This section adds graph-specific details only. Setup, install, basic commands, and the core indexing architecture are already documented above.
 
-### Quick Start (index + Neo4j)
+### Start Neo4j
 
 ```bash
-# 1. Clone and setup (if not already)
-git clone <repo-url>
-cd codepulse
-
-# 2. Virtual environment
-python3 -m venv .venv
-source .venv/bin/activate        # Linux/Mac
-# .venv\Scripts\activate         # Windows
-
-# 3. Install
-pip install -e .
-
-# 4. Start Neo4j
 docker run -d --name neo4j-codepulse \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/neo4jadmin neo4j:latest
+```
 
-# 5. Index a repo and push to Neo4j
+Neo4j browser: [http://localhost:7474](http://localhost:7474)
+
+### Push a repo to Neo4j
+
+```bash
 codepulse index /path/to/your/project --to-graph
-
-# 6. Browse: http://localhost:7474
 ```
 
-### `codepulse index` and graph-related commands
-
-```bash
-codepulse index                         # index current directory
-codepulse index /path/to/repo           # index a specific path
-codepulse index --full                  # ignore the snapshot cache
-codepulse index --to-graph              # also push to Neo4j
-```
-
-- In a **git** repo, `--to-graph` runs in **commit mode**: it parses the files that changed between `HEAD~1` and `HEAD` and tags every node with the current commit id.
-- In a **non-git** directory (or if git is unavailable), it uses **snapshot mode** and parses the whole tree.
-
-```bash
-codepulse graph clear                   # wipe every node + relationship in Neo4j
-```
-
-```bash
-codepulse repos                         # list indexed repos
-codepulse remove /path/to/repo          # unregister + clear local snapshot (does NOT touch Neo4j)
-```
+In a **git** repo, `--to-graph` runs in **commit mode**: it parses the files that changed between `HEAD~1` and `HEAD` and tags graph data with the current commit id. In a **non-git** directory, it falls back to **snapshot mode** and parses the whole tree.
 
 ### Configuration (environment variables)
 
-| Variable | Default |
-|---|---|
-| `CODEPULSE_NEO4J_URI` | `bolt://localhost:7687` |
-| `CODEPULSE_NEO4J_USER` | `neo4j` |
-| `CODEPULSE_NEO4J_PASSWORD` | `neo4jadmin` |
-| `CODEPULSE_DATA_DIR` | `~/.codepulse` (SQLite snapshot cache) |
 
-Neo4j browser: http://localhost:7474
+| Variable                   | Default                                |
+| -------------------------- | -------------------------------------- |
+| `CODEPULSE_NEO4J_URI`      | `bolt://localhost:7687`                |
+| `CODEPULSE_NEO4J_USER`     | `neo4j`                                |
+| `CODEPULSE_NEO4J_PASSWORD` | `neo4jadmin`                           |
+| `CODEPULSE_DATA_DIR`       | `~/.codepulse` (SQLite snapshot cache) |
+
+
+Neo4j browser: [http://localhost:7474](http://localhost:7474)
 
 ### Graph model (Neo4j)
 
@@ -241,20 +214,22 @@ Every node carries a `repo_id` (stable SHA-1 of the git remote URL, or of the ab
 
 **Unique keys (MERGE targets):**
 
-| Node | Key |
-|---|---|
-| `Repo` | `id` |
-| `Commit` | `(repo_id, id)` |
-| `Change` | `(repo_id, commit_id, file_path)` |
-| `File` | `(repo_id, commit_id, path)` |
-| `Symbol` | `(repo_id, commit_id, qualified_name)` |
-| `Package` | `(repo_id, commit_id, name)` |
+
+| Node      | Key                                    |
+| --------- | -------------------------------------- |
+| `Repo`    | `id`                                   |
+| `Commit`  | `(repo_id, id)`                        |
+| `Change`  | `(repo_id, commit_id, file_path)`      |
+| `File`    | `(repo_id, commit_id, path)`           |
+| `Symbol`  | `(repo_id, commit_id, qualified_name)` |
+| `Package` | `(repo_id, commit_id, name)`           |
+
 
 `Symbol.qualified_name` is prefixed with `repo_id` (for example `a1b2c3d4e5.codepulse.cli.index_cmd.index`) so names do not clash across repos. The human-readable name is on the `repo` property.
 
 **Multi-repo behavior:** Indexing repo A, then repo B, stores both in the same Neo4j instance as two separate subgraphs. Filter with `repo_id` in Cypher, or run `codepulse graph clear` to start empty.
 
-### Handy Cypher (replace placeholders with real values from your data)
+### Handy Cypher
 
 Do not use angle-bracket placeholders like `'<sha>'` as literal strings — copy a real `Commit.id` from a query.
 
@@ -277,47 +252,7 @@ RETURN c.id, ch.file_path, ch.type
 LIMIT 50
 ```
 
-### Extended project structure (graph + git layers)
-
-The tree below supplements the "Project structure" section earlier in this file.
-
-```
-codepulse/
-  cli/
-    main.py
-    index_cmd.py
-    graph_cmd.py
-    repos_cmd.py
-  indexer/
-    repo_scanner.py
-    language_detector.py
-    snapshot.py
-    parser_worker.py
-    index_service.py
-  parsers/
-    base.py
-    python_parser.py
-    typescript_parser.py
-    java_parser.py
-    cpp_parser.py
-  git/
-    repo_identity.py
-    commit_meta.py
-    diff_resolver.py
-    _gitcli.py
-  graph/
-    client.py
-    schema.py
-    payload.py
-  db/
-    migrations.py
-    run_store.py
-    models.py
-  config.py
-  logging.py
-```
-
-### End-to-end architecture (index + graph push)
+### Graph push flow
 
 ```
 codepulse index [--to-graph]
@@ -345,9 +280,7 @@ codepulse index [--to-graph]
      Neo4j
 ```
 
-**Layering:** `cli/` handles arguments and printing only. `indexer/` finds and parses source. `parsers/` implement per-language AST rules. `git/` wraps `git` and commit metadata. `graph/` talks to Neo4j.
-
-### Troubleshooting (same content as the former `codepulse/README.md`)
+### Troubleshooting
 
 **No nodes after indexing:** use `--to-graph`.
 
@@ -364,12 +297,3 @@ codepulse index /path/to/repo --to-graph
 ```cypher
 MATCH (n) RETURN n LIMIT 25
 ```
-
-
-Each layer has a single job:
-
-- `cli/` — argument parsing + printing only.
-- `indexer/` — how to find and parse source files.
-- `parsers/` — per-language AST extraction.
-- `git/` — everything that shells out to `git`.
-- `graph/` — everything that speaks to Neo4j.
