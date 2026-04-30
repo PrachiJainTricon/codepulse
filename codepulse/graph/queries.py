@@ -46,18 +46,23 @@ def _neo4j_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSy
     """
     from codepulse.graph.client import Neo4jClient
 
-    cypher = """
-    MATCH path = (start:Symbol)<-[:CALLS|IMPORTS*1..$max_depth]-(other:Symbol)
+    # Cypher disallows parameters inside variable-length path quantifiers,
+    # so the int is validated and inlined.
+    depth = max(1, min(int(max_depth), 10))
+
+    cypher = f"""
+    MATCH path = (start:Symbol)<-[:CALLS|IMPORTS*1..{depth}]-(other:Symbol)
     WHERE start.name = $symbol_name OR start.qualified_name ENDS WITH $symbol_name
     RETURN other.name        AS name,
            other.file        AS file,
            other.kind        AS kind,
            length(path)      AS depth
     ORDER BY depth
+    LIMIT 200
     """
 
     def _tx(tx):
-        return list(tx.run(cypher, symbol_name=symbol_name, max_depth=max_depth))
+        return list(tx.run(cypher, symbol_name=symbol_name))
 
     with Neo4jClient() as client:
         with client.driver.session(database=client.database) as session:
