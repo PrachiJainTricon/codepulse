@@ -84,3 +84,26 @@ def _snapshot(repo_path: Path) -> CommitContext:
         head_commit=None,
         changes=[],
     )
+
+
+@dataclass(frozen=True)
+class CommitMeta:
+    """Lightweight commit metadata for LLM context."""
+    sha: str
+    author: str
+    date: str
+    message: str
+
+
+def get_commit_meta(repo_path: str, ref: str = "HEAD") -> CommitMeta:
+    """Return author, date, and message for *ref* in *repo_path*."""
+    root = Path(repo_path)
+    if not is_git_repo(root):
+        return CommitMeta(sha="", author="", date="", message="")
+
+    sha     = git_output(root, "rev-parse", "--short", ref) or ""
+    author  = git_output(root, "log", "-1", "--format=%an", ref) or ""
+    date    = git_output(root, "log", "-1", "--format=%ad", "--date=short", ref) or ""
+    message = git_output(root, "log", "-1", "--format=%s", ref) or ""
+    return CommitMeta(sha=sha, author=author, date=date, message=message)
+

@@ -1,12 +1,9 @@
 """
 Neo4j blast-radius queries.
 
-P2 owns this file. P4 (investigator node) calls get_blast_radius() and
-get_test_coverage(). The signatures below are the contract — P2 fills
-in the Cypher; P4 works against the mock until Neo4j is ready.
-
-To swap in real Neo4j, replace _MOCK_MODE = True with False and make
-sure NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD are set in .env.
+When CODEPULSE_NEO4J_URI is set, real Cypher queries run against Neo4j.
+Otherwise falls back to built-in mock data so the pipeline can be
+demoed without a running database.
 """
 
 from __future__ import annotations
@@ -15,7 +12,7 @@ import os
 
 from codepulse.agents.state import ImpactedSymbol
 
-_MOCK_MODE: bool = os.getenv("NEO4J_URI") is None
+_MOCK_MODE: bool = os.getenv("CODEPULSE_NEO4J_URI") is None
 
 
 # ── Mock data (used when Neo4j is not available) ──────────────────────────────
@@ -38,30 +35,67 @@ _MOCK_TEST_FILES: dict[str, bool] = {
 }
 
 
-# ── Real Neo4j queries (P2 fills these in) ────────────────────────────────────
+# ── Real Neo4j queries ────────────────────────────────────────────────────────
 
 def _neo4j_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSymbol]:
     """
-    Cypher query to traverse callers/importers up to max_depth hops.
+    Traverse callers/importers of *symbol_name* up to *max_depth* hops.
 
-    MATCH path = (start:Symbol {name: $symbol_name})<-[:CALLS|IMPORTS*1..$max_depth]-(other)
-    RETURN other.name AS name, other.file AS file, other.kind AS kind,
-           length(path) AS depth
+    Matches any Symbol whose ``name`` ends with the unqualified identifier
+    (handles repo-id-prefixed qualified_name values stored by the ingester).
+    """
+    from codepulse.graph.client import Neo4jClient
+
+    cypher = """
+    MATCH path = (start:Symbol)<-[:CALLS|IMPORTS*1..$max_depth]-(other:Symbol)
+    WHERE start.name = $symbol_name OR start.qualified_name ENDS WITH $symbol_name
+    RETURN other.name        AS name,
+           other.file        AS file,
+           other.kind        AS kind,
+           length(path)      AS depth
     ORDER BY depth
     """
-    # TODO (P2): replace this stub with a real neo4j driver call
-    raise NotImplementedError("Neo4j query not yet implemented by P2")
+
+    def _tx(tx):
+        return list(tx.run(cypher, symbol_name=symbol_name, max_depth=max_depth))
+
+    with Neo4jClient() as client:
+        with client.driver.session(database=client.database) as session:
+            records = session.execute_read(_tx)
+
+    return [
+        ImpactedSymbol(
+            name=str(r["name"]),
+            file=str(r["file"] or ""),
+            kind=str(r["kind"] or "unknown"),
+            depth=int(r["depth"]),
+        )
+        for r in records
+    ]
 
 
 def _neo4j_has_tests(symbol_name: str) -> bool:
     """
-    Check whether a symbol has associated test files in the graph.
-
-    MATCH (:Symbol {name: $symbol_name})-[:TESTED_BY]->(:File {is_test: true})
-    RETURN count(*) > 0 AS has_tests
+    Return True if *symbol_name* has at least one test file linked via
+    a ``TESTED_BY`` relationship in the graph.
     """
-    # TODO (P2): replace this stub with a real neo4j driver call
-    raise NotImplementedError("Neo4j query not yet implemented by P2")
+    from codepulse.graph.client import Neo4jClient
+
+    cypher = """
+    MATCH (s:Symbol)-[:TESTED_BY]->(f:File)
+    WHERE (s.name = $symbol_name OR s.qualified_name ENDS WITH $symbol_name)
+      AND f.is_test = true
+    RETURN count(f) > 0 AS has_tests
+    """
+
+    def _tx(tx):
+        result = tx.run(cypher, symbol_name=symbol_name)
+        record = result.single()
+        return bool(record["has_tests"]) if record else False
+
+    with Neo4jClient() as client:
+        with client.driver.session(database=client.database) as session:
+            return session.execute_read(_tx)
 
 
 # ── Public API (P4 uses these) ────────────────────────────────────────────────
