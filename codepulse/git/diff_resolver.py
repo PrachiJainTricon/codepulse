@@ -1,143 +1,84 @@
-"""
-P3 — Git diff resolver.
-
-Converts `git diff <ref>` output into a list of ChangedSymbol objects
-that the LangGraph pipeline can consume.
-
-Pipeline entry point:
-    changed = resolve_diff(repo_path="./my-repo", commit_ref="HEAD~1")
-"""
+"""Resolve a list of changed files between two git commits."""
 
 from __future__ import annotations
 
-import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
-from codepulse.agents.state import ChangedSymbol
-from codepulse.git.symbol_diff import extract_symbols_from_hunk
+from codepulse.git._gitcli import git_output
+from codepulse.indexer.language_detector import detect_language
 
 
-# ── Low-level git helpers ─────────────────────────────────────────────────────
-
-def _run(args: list[str], cwd: str) -> str:
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git command failed: {result.stderr.strip()}")
-    return result.stdout
+@dataclass(frozen=True)
+class ChangeEntry:
+    file_path: str
+    status: str  # single-letter git status: A / M / D / R / C
+    type: str    # normalized: added / modified / deleted
 
 
-def get_changed_files(repo_path: str, commit_ref: str = "HEAD~1") -> list[str]:
-    """Return repo-relative paths of all files changed in the diff."""
-    output = _run(["git", "diff", commit_ref, "--name-only"], cwd=repo_path)
-    return [line.strip() for line in output.splitlines() if line.strip()]
+def git_diff_changes(repo_path: Path, base: str, head: str) -> list[ChangeEntry]:
+    """Return `ChangeEntry` rows for `git diff --name-status base head`."""
+    output = git_output(repo_path, "diff", "--name-status", base, head)
+    if not output:
+        return []
+    changes: list[ChangeEntry] = []
+    for line in output.splitlines():
+        parts = [p for p in line.split("\t") if p]
+        if len(parts) < 2:
+            continue
+        status = parts[0][0]
+        change_type = _status_to_type(status)
+        if change_type is None:
+            continue
+        file_path = parts[-1].replace("\\", "/")
+        changes.append(ChangeEntry(file_path=file_path, status=status, type=change_type))
+    return changes
 
 
-def get_raw_diff(repo_path: str, commit_ref: str = "HEAD~1") -> str:
-    """Return the full unified diff text."""
-    return _run(["git", "diff", commit_ref, "--unified=3"], cwd=repo_path)
+def git_initial_commit_changes(repo_path: Path) -> list[ChangeEntry]:
+    """All tracked language files for the initial commit (no base to diff against)."""
+    output = git_output(repo_path, "ls-tree", "-r", "--name-only", "HEAD")
+    if not output:
+        return []
+    changes: list[ChangeEntry] = []
+    for line in output.splitlines():
+        rel = line.strip().replace("\\", "/")
+        if not rel or detect_language(Path(rel)) is None:
+            continue
+        changes.append(ChangeEntry(file_path=rel, status="A", type="added"))
+    return changes
 
 
-# ── Hunk-level parsing ────────────────────────────────────────────────────────
-
-def _parse_file_hunks(diff_text: str) -> list[dict]:
-    """
-    Split a unified diff into per-file hunks.
-
-    Returns a list of:
-        {
-            "file": "payments/service.py",
-            "added_lines": ["def charge_card(user, amount):", ...],
-            "removed_lines": ["def charge_card(user):", ...],
-            "start_line": 42,
-        }
-    """
-    import re
-
-    hunks: list[dict] = []
-    current_file: str | None = None
-    added: list[str] = []
-    removed: list[str] = []
-    start_line: int | None = None
-
-    for line in diff_text.splitlines():
-        if line.startswith("diff --git"):
-            if current_file is not None:
-                hunks.append(
-                    {
-                        "file": current_file,
-                        "added_lines": added,
-                        "removed_lines": removed,
-                        "start_line": start_line,
-                    }
-                )
-            m = re.search(r" b/(.+)$", line)
-            current_file = m.group(1) if m else None
-            added, removed, start_line = [], [], None
-
-        elif line.startswith("@@"):
-            m = re.search(r"\+(\d+)", line)
-            if m:
-                start_line = int(m.group(1))
-
-        elif line.startswith("+") and not line.startswith("+++"):
-            added.append(line[1:])
-
-        elif line.startswith("-") and not line.startswith("---"):
-            removed.append(line[1:])
-
-    if current_file is not None:
-        hunks.append(
-            {
-                "file": current_file,
-                "added_lines": added,
-                "removed_lines": removed,
-                "start_line": start_line,
-            }
-        )
-
-    return hunks
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def resolve_diff(repo_path: str, commit_ref: str = "HEAD~1") -> list[ChangedSymbol]:
-    """
-    Main P3 entry point.
-
-    Parse `git diff <commit_ref>` and return a list of ChangedSymbol dicts
-    ready to be passed into AgentState["changed_symbols"].
-
-    Falls back to file-level symbols if no function/class names can be
-    extracted from the diff lines.
-    """
-    repo_path = str(Path(repo_path).resolve())
-    raw = get_raw_diff(repo_path, commit_ref)
-    hunks = _parse_file_hunks(raw)
-
-    results: list[ChangedSymbol] = []
-
-    for hunk in hunks:
-        file_path: str = hunk["file"]
-        symbols = extract_symbols_from_hunk(
-            file_path=file_path,
-            added_lines=hunk["added_lines"],
-            removed_lines=hunk["removed_lines"],
-            start_line=hunk["start_line"],
-        )
-
-        if symbols:
-            results.extend(symbols)
-        else:
-            # Fallback: treat the whole file as a changed "symbol"
-            results.append(
-                ChangedSymbol(
-                    file=file_path,
-                    symbol=Path(file_path).stem,
-                    kind="unknown",
-                    change_type="modified",
-                    start_line=hunk["start_line"],
-                    end_line=None,
-                )
+def git_working_tree_changes(repo_path: Path) -> list[ChangeEntry]:
+    """Return changes in the working tree (unstaged + staged) vs HEAD."""
+    output = git_output(repo_path, "diff", "--name-status", "HEAD")
+    staged = git_output(repo_path, "diff", "--name-status", "--cached", "HEAD")
+    seen: dict[str, ChangeEntry] = {}
+    for raw in (output, staged):
+        if not raw:
+            continue
+        for line in raw.splitlines():
+            parts = [p for p in line.split("\t") if p]
+            if len(parts) < 2:
+                continue
+            status = parts[0][0]
+            change_type = _status_to_type(status)
+            if change_type is None:
+                continue
+            file_path = parts[-1].replace("\\", "/")
+            seen[file_path] = ChangeEntry(
+                file_path=file_path, status=status, type=change_type,
             )
+    return list(seen.values())
 
-    return results
+
+def _status_to_type(status: str) -> str | None:
+    if status == "A":
+        return "added"
+    if status == "M":
+        return "modified"
+    if status == "D":
+        return "deleted"
+    if status in {"R", "C"}:
+        return "modified"
+    return None

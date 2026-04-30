@@ -1,66 +1,86 @@
-"""
-P3 — Commit metadata helper.
+"""Resolve the commit context (HEAD, base, changes) for a repo path.
 
-Fetches human-readable info about a commit so the explainer/PR writer
-agents can include context like author and message in their output.
+Falls back to a stable "snapshot" id when the path is not a git repo.
 """
 
 from __future__ import annotations
 
-import subprocess
-from typing import TypedDict
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+from codepulse.git._gitcli import git_output, is_git_repo
+from codepulse.git.diff_resolver import (
+    ChangeEntry,
+    git_diff_changes,
+    git_initial_commit_changes,
+    git_working_tree_changes,
+)
 
 
-class CommitMeta(TypedDict):
-    sha: str
-    short_sha: str
-    author: str
-    date: str
-    subject: str       # first line of commit message
-    body: str          # rest of commit message (may be empty)
+@dataclass(frozen=True)
+class CommitContext:
+    """Information about the commit/snapshot being indexed."""
+
+    commit_id: str
+    mode: str                 # "commit" or "snapshot"
+    base_commit: str | None
+    head_commit: str | None
+    changes: list[ChangeEntry]
 
 
-def get_commit_meta(repo_path: str, commit_ref: str = "HEAD") -> CommitMeta:
-    """
-    Return metadata for the given commit ref.
+def resolve_commit_context(repo_path: Path) -> CommitContext:
+    """Derive commit metadata from git, or fall back to a snapshot hash."""
+    repo_path = repo_path.resolve()
 
-    Example:
-        meta = get_commit_meta("./my-repo", "HEAD~1")
-        # {"sha": "abc123...", "author": "Alice", "subject": "fix payment bug", ...}
-    """
-    fmt = "%H%n%h%n%an%n%ad%n%s%n%b"
-    result = subprocess.run(
-        ["git", "log", "-1", f"--format={fmt}", "--date=short", commit_ref],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
+    if not is_git_repo(repo_path):
+        return _snapshot(repo_path)
+
+    head = git_output(repo_path, "rev-parse", "HEAD")
+    if not head:
+        return _snapshot(repo_path)
+
+    base = git_output(repo_path, "rev-parse", "HEAD~1")
+    if base:
+        return CommitContext(
+            commit_id=head,
+            mode="commit",
+            base_commit=base,
+            head_commit=head,
+            changes=git_diff_changes(repo_path, base, head),
+        )
+
+    # Initial commit — no parent to diff against.
+    return CommitContext(
+        commit_id=head,
+        mode="commit",
+        base_commit=None,
+        head_commit=head,
+        changes=git_initial_commit_changes(repo_path),
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"git log failed: {result.stderr.strip()}")
 
-    lines = result.stdout.split("\n", 5)
-    # pad to 6 entries in case body is missing
-    while len(lines) < 6:
-        lines.append("")
 
-    return CommitMeta(
-        sha=lines[0].strip(),
-        short_sha=lines[1].strip(),
-        author=lines[2].strip(),
-        date=lines[3].strip(),
-        subject=lines[4].strip(),
-        body=lines[5].strip(),
+def compute_snapshot_commit_id(repo_path: Path) -> str:
+    """Deterministic id derived from file paths + mtimes (non-git fallback)."""
+    repo_path = repo_path.resolve()
+    entries: list[str] = []
+    for path in sorted(repo_path.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(repo_path).as_posix()
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            continue
+        entries.append(f"{rel}:{mtime_ns}")
+    return hashlib.sha1("\n".join(entries).encode("utf-8")).hexdigest()
+
+
+def _snapshot(repo_path: Path) -> CommitContext:
+    return CommitContext(
+        commit_id=compute_snapshot_commit_id(repo_path),
+        mode="snapshot",
+        base_commit=None,
+        head_commit=None,
+        changes=[],
     )
-
-
-def get_diff_stat(repo_path: str, commit_ref: str = "HEAD~1") -> str:
-    """Return a short --stat summary (number of files, insertions, deletions)."""
-    result = subprocess.run(
-        ["git", "diff", commit_ref, "--stat"],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()

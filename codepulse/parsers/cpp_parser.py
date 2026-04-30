@@ -4,6 +4,9 @@ C / C++ parser using tree-sitter.
 Extracts class / struct / enum / namespace definitions,
 functions, methods, #include directives, and function calls
 from C and C++ source files.
+
+Node type constants (from source tree_parser.py):
+  - C/C++ node types for import/class/method/function/call detection
 """
 
 from __future__ import annotations
@@ -21,6 +24,12 @@ from codepulse.parsers.base import (
     SymbolInfo,
     SymbolKind,
 )
+
+C_CPP_CLASS_TYPES = {"struct_specifier", "class_specifier"}
+C_CPP_METHOD_TYPES = {"function_definition"}
+C_CPP_FUNCTION_TYPES = {"function_definition"}
+C_CPP_CALL_TYPES = {"call_expression"}
+C_CPP_IMPORT_TYPES = {"preproc_include"}
 
 # ── Tree-sitter setup ────────────────────────────────────────
 _LANGUAGE = Language(ts_cpp.language())

@@ -130,15 +130,21 @@ def run_index(repo_path: Path, *, full: bool = False) -> IndexReport:
     )
 
     with RepoStore() as repo_store:
-        repo_store.update_stats(
-            str(repo_path),
-            languages=", ".join(sorted(report.languages_found)),
-            total_files=report.total_files,
-            total_symbols=report.total_symbols,
-            total_imports=report.total_imports,
-            total_calls=report.total_calls,
-            total_exports=report.total_exports,
-        )
+        if full:
+            # Full run has the complete picture — overwrite stats.
+            repo_store.update_stats(
+                str(repo_path),
+                languages=", ".join(sorted(report.languages_found)),
+                total_files=report.total_files,
+                total_symbols=report.total_symbols,
+                total_imports=report.total_imports,
+                total_calls=report.total_calls,
+                total_exports=report.total_exports,
+            )
+        else:
+            # Incremental run only saw changed files — don't clobber
+            # the totals from the last full run; just bump the timestamp.
+            repo_store.touch(str(repo_path))
         # Re-fetch to get updated timestamps
         report.repo = repo_store.get_by_path(str(repo_path))  # type: ignore
 
