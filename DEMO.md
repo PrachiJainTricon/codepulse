@@ -1,136 +1,214 @@
 # CodePulse — Demo Guide
 
-> **What it does:** Scan your last git commit → find every symbol downstream of the change → score the risk → explain what might break in plain English.
+> **What it does:** Scan your last git commit → find every downstream symbol via Neo4j graph traversal → score the risk → explain what might break in plain English.
+>
+> **Status: Fully live MVP.** Real Neo4j graph, real git diff parsing, real LangGraph pipeline, real FastAPI server. No mocks in the demo path.
 
 ---
 
-## Quick start (2 minutes)
+## What was built (summary)
 
-### 1. Install
+| Feature | Detail |
+|---|---|
+| **CLI diff pipeline** | `codepulse diff <ref>` parses `git diff`, extracts symbols via tree-sitter, queries Neo4j blast radius, runs LangGraph agents, outputs Rich panels |
+| **LangGraph multi-agent** | 4 nodes: `investigator → risk_analyst → explainer → pr_writer` |
+| **Real Neo4j queries** | `_neo4j_blast_radius` traverses `(:Symbol)<-[:CALLS\|IMPORTS*1..N]-(:Symbol)` up to configurable depth |
+| **FastAPI server** | 4 routers: `/repos/`, `/graph/blast-radius`, `/graph/test-coverage`, `/chat/`, `/health` |
+| **Chat agent** | Enriches question with Neo4j blast-radius context → Claude (or fallback template) |
+| **Indexed corpus** | Voyager apps repo — **7,517 files / 50,805 symbols / ~1.47M relationships** |
+| **Neo4j mode switch** | `_MOCK_MODE` flips automatically when `CODEPULSE_NEO4J_URI` is set |
+| **Warning suppression** | `warn_notification_severity="OFF"` on the Neo4j driver — clean terminal output |
 
-```bash
-pip install -e ".[dev]"
+---
+
+## Prerequisites
+
+### Neo4j (running locally)
+Neo4j Community 5.24 with portable Temurin JDK 21 at:
+```
+C:\Users\adarsh.goyal\codepulse_tools\neo4j\neo4j-community-5.24.0\
+C:\Users\adarsh.goyal\codepulse_tools\jdk\jdk-21.0.5+11\
 ```
 
-### 2. Create `.env` in the repo root
-
-```env
-ANTHROPIC_API_KEY=sk-ant-...        # required for LLM explanation
-NEO4J_URI=bolt://localhost:7687     # optional — uses mock data without it
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=password
+Start Neo4j:
+```powershell
+$env:JAVA_HOME = "C:\Users\adarsh.goyal\codepulse_tools\jdk\jdk-21.0.5+11"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+& "C:\Users\adarsh.goyal\codepulse_tools\neo4j\neo4j-community-5.24.0\bin\neo4j.bat" console
 ```
 
-Without `ANTHROPIC_API_KEY` the tool still runs — it uses a template explanation instead of Claude.
+> **Preferred (future):** Run Neo4j via Docker — no host Java needed:
+> ```powershell
+> docker run -d --name codepulse-neo4j -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/neo4jadmin neo4j:5.24.0-community
+> ```
+> Docker Desktop must be installed for this. Once installed, this is the recommended startup.
 
-### 3. Run against any repo
+### Python venv
+```powershell
+cd C:\Users\adarsh.goyal\codepulse
+.\.venv\Scripts\Activate.ps1
+```
 
-```bash
-cd /path/to/any-git-repo
-
-python -m codepulse.cli.main diff HEAD~1
+### Environment variables (set once per session)
+```powershell
+$env:CODEPULSE_NEO4J_URI      = "bolt://localhost:7687"
+$env:CODEPULSE_NEO4J_USER     = "neo4j"
+$env:CODEPULSE_NEO4J_PASSWORD = "neo4jadmin"
+# Optional — enables Claude LLM explanation instead of template fallback:
+# $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
 ---
 
-## Commands
+## Demo walkthrough (5 steps)
+
+### Step 1 — Verify connectivity
+
+```powershell
+Test-NetConnection localhost -Port 7687 | Select-Object TcpTestSucceeded
+python -m codepulse.cli.main --help
+```
+
+**What to see:**
+- `TcpTestSucceeded : True` — Neo4j Bolt is live
+- 6 registered commands: `index`, `remove`, `diff`, `ui`, `repos`, `graph`
+
+**Why it matters:** Setting `CODEPULSE_NEO4J_URI` disables `_MOCK_MODE` in `graph/queries.py`. Every subsequent command uses real Cypher.
+
+---
+
+### Step 2 — Indexed repository
+
+```powershell
+python -m codepulse.cli.main repos list
+```
+
+**What to see:**
+```
+Indexed Repositories
+┌──────────────────────────────────────────────────────────────────────┐
+│ C:\Users\adarsh.goyal\mvh\Voyager_Main\Voyager_UI\VoyagerApp\apps   │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Cross-check in Neo4j Browser** (http://localhost:7474, login `neo4j`/`neo4jadmin`):
+```cypher
+MATCH (s:Symbol) RETURN count(s) AS symbols;
+MATCH (f:File)   RETURN count(f) AS files;
+```
+Expected: ~50,805 symbols, ~7,517 files.
+
+---
+
+### Step 3 — Full diff pipeline (the headline demo)
+
+```powershell
+python -m codepulse.cli.main diff HEAD~1 `
+  --repo "C:\Users\adarsh.goyal\mvh\Voyager_Main\Voyager_UI\VoyagerApp\apps" `
+  --pr
+```
+
+**Output panels:**
+
+| Panel | What it shows | Proof of real data |
+|---|---|---|
+| **Changed Symbols** | Symbols extracted from `git diff HEAD~1` via tree-sitter | File paths from actual Voyager diff hunks |
+| **Downstream Impact** | Symbols impacted up to depth 2 via Neo4j CALLS/IMPORTS traversal | Names like `checkForTooltip`, `printPainBCSData` — not in mock data |
+| **Risk Assessment** | `MEDIUM` (score 9) — 3 downstream, depth 1, no tests | Deterministic formula on real graph counts |
+| **Explanation** | Plain-English summary of what broke | Template (add `ANTHROPIC_API_KEY` for Claude) |
+| **PR Description** | Ready-to-paste markdown PR body | Auto-generated from agent state |
+
+**Last run results:**
+- 11 changed symbols (`ResourceScheduleManagerV2`, `Constant`, …)
+- 3 downstream symbols impacted (`checkForTooltip`, `printPainBCSData`, `checkShowTooltip`)
+- Risk: **MEDIUM**, score: **9**
+
+---
+
+### Step 4 — REST API
+
+Start the server (in a separate terminal):
+```powershell
+$env:CODEPULSE_NEO4J_URI="bolt://localhost:7687"
+$env:CODEPULSE_NEO4J_USER="neo4j"
+$env:CODEPULSE_NEO4J_PASSWORD="neo4jadmin"
+python -m codepulse.cli.main ui
+```
+
+Then call the endpoints:
+```powershell
+# Health
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/health"
+
+# Indexed repos (7,517 files, 50,805 symbols)
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/repos/" | ConvertTo-Json -Depth 5
+
+# Graph blast radius — 200 downstream symbols from real Neo4j
+$r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/graph/blast-radius?symbol=getActualUrl&max_depth=2"
+"count = $($r.count)"
+
+# Swagger UI
+Start-Process "http://127.0.0.1:8000/docs"
+```
+
+**Key proof:** `/graph/blast-radius?symbol=getActualUrl` returns **count=200** — mock mode for this symbol returns 0.
+
+---
+
+### Step 5 — Chat endpoint (graph-enriched Q&A)
+
+```powershell
+$body = @{ question = "What breaks if I change getActualUrl?"; symbol_hint = "getActualUrl" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/chat/" -ContentType "application/json" -Body $body
+```
+
+**What to see:**
+- `Context gathered:` block lists ~200 real downstream symbols fetched from Neo4j
+- Without `ANTHROPIC_API_KEY` → template answer wrapping the context
+- With `ANTHROPIC_API_KEY` → Claude generates a natural-language risk explanation using the graph context
+
+---
+
+## Commands reference
 
 | Command | What it does |
 |---|---|
-| `diff HEAD~1` | Analyse the last commit |
-| `diff HEAD~3` | Analyse 3 commits back |
-| `diff abc1234` | Analyse a specific SHA |
-| `diff HEAD~1 --pr` | Also generate a PR description |
-| `diff HEAD~1 --json` | Raw JSON output (pipe-friendly) |
-| `diff HEAD~1 --repo ./my-app` | Point at a different repo path |
+| `codepulse index <repo>` | Scan + parse repo, store snapshot in SQLite |
+| `codepulse index <repo> --to-graph` | Also push symbols/relationships into Neo4j |
+| `codepulse repos list` | Show all indexed repos |
+| `codepulse diff HEAD~1` | Analyse last commit (risk panels) |
+| `codepulse diff HEAD~3 --pr` | Analyse + generate PR description |
+| `codepulse diff <sha> --repo <path>` | Target specific commit + repo |
+| `codepulse ui` | Start FastAPI server on port 8000 |
+| `codepulse graph clear` | Wipe all Neo4j nodes |
+| `codepulse remove <repo>` | Unregister repo from SQLite (does NOT wipe Neo4j) |
 
 ---
 
-## Demo script (show this in order)
-
-### Step 1 — Show the diff
-
-```bash
-git diff HEAD~1 --stat
-```
-
-Show the audience: "Here's what changed in the last commit — just raw Git output."
-
-### Step 2 — Run CodePulse on it
-
-```bash
-python -m codepulse.cli.main diff HEAD~1 --repo .
-```
-
-**What they'll see:**
-
-- **Changed Symbols** table — every function/class touched in the diff, mapped to file + change type (added / modified / deleted)
-- **Downstream Impact** table — symbols reachable from the changed ones in the code graph (mock data for now; real Neo4j once P2 wires it in)
-- **Risk Assessment** panel — LOW / MEDIUM / HIGH label with a numeric score and bullet reasons
-- **Explanation** panel — plain-English summary of what's impacted and why the risk is what it is
-
-### Step 3 — Show the PR description
-
-```bash
-python -m codepulse.cli.main diff HEAD~1 --repo . --pr
-```
-
-A ready-to-paste PR description appears at the bottom.
-
-### Step 4 — Show JSON output (optional, for technical audience)
-
-```bash
-python -m codepulse.cli.main diff HEAD~1 --repo . --json
-```
-
-Shows the raw structured result — useful for piping into CI systems.
-
----
-
-## How it works (3 layers)
+## How it works (architecture)
 
 ```
 git diff HEAD~1
       │
       ▼
- ┌─────────────┐
- │  P3: Diff   │  diff_resolver.py  →  parse raw diff  →  list[ChangedSymbol]
- │  resolver   │  symbol_diff.py    →  regex-extract function/class names
- └──────┬──────┘
-        │  changed_symbols
-        ▼
- ┌─────────────────────────────────────────────────────────────────┐
- │  P4: LangGraph pipeline                                         │
- │                                                                 │
- │  investigator_node  →  Neo4j blast-radius query (mock now)     │
- │       │                fan_out, max_depth, cross_module        │
- │       ▼                                                         │
- │  risk_analyst_node  →  deterministic score + LOW/MED/HIGH      │
- │       ▼                                                         │
- │  explainer_node     →  Claude API → plain-English explanation  │
- └──────────────────────────────────────────────────────────────────┘
+ diff_resolver.py ──► tree-sitter AST parse ──► list[ChangedSymbol]
+      │
+      ▼
+ LangGraph pipeline
+ ┌─────────────────────────────────────────────────────────────┐
+ │  investigator_node  →  Neo4j Cypher blast-radius query     │
+ │       │                (CALLS|IMPORTS*1..N traversal)      │
+ │       ▼                                                     │
+ │  risk_analyst_node  →  score = fan_out×2 + depth×3        │
+ │       ▼                − has_tests×4 → LOW/MED/HIGH        │
+ │  explainer_node     →  Claude (or template fallback)       │
+ │       ▼                                                     │
+ │  pr_writer_node     →  markdown PR description             │
+ └─────────────────────────────────────────────────────────────┘
         │
         ▼
-   RiskResult  →  Rich CLI output
+   RiskResult  →  Rich CLI panels  /  JSON  /  REST API
 ```
-
----
-
-## File ownership (who built what)
-
-| Layer | Files | Owner |
-|---|---|---|
-| Shared contracts | `codepulse/agents/state.py` | P3 + P4 (frozen Day 1) |
-| Diff parsing | `codepulse/git/diff_resolver.py` | P3 |
-| Symbol extraction | `codepulse/git/symbol_diff.py` | P3 |
-| Commit metadata | `codepulse/git/commit_meta.py` | P3 |
-| Investigator node | `codepulse/agents/change_investigator.py` | P4 |
-| Risk analyst node | `codepulse/agents/risk_analyst.py` | P4 |
-| LLM prompts | `codepulse/agents/prompts.py` | P4 |
-| Explainer node | `codepulse/agents/explainer.py` | P4 |
-| LangGraph pipeline | `codepulse/agents/pipeline.py` | P4 |
-| Neo4j queries | `codepulse/graph/queries.py` | P2 (stub ready) |
-| CLI command | `codepulse/cli/diff_cmd.py` | P5 |
 
 ---
 
@@ -144,59 +222,20 @@ MEDIUM → score 8–15
 HIGH   → score > 15
 ```
 
-- **fan_out** — number of downstream symbols impacted
-- **max_depth** — how many hops the impact travels through the graph
-- **cross_module** — impact crosses top-level package boundary
-- **has_tests** — test coverage detected (reduces score)
-
 ---
 
-## What's mocked vs. real
+## What's real vs. what can be improved
 
 | Component | Status |
 |---|---|
-| Git diff parsing | **Real** — runs actual `git diff` |
-| Symbol name extraction | **Real** — regex on diff lines (Python + TS) |
+| Git diff parsing | **Real** — `git diff` + tree-sitter |
+| Symbol extraction | **Real** — Python, TypeScript, Java, C/C++ |
 | Commit metadata | **Real** — `git log` |
-| Neo4j blast radius | **Mock** — hardcoded graph in `graph/queries.py`. Replace when P2 sets up Neo4j. |
+| Neo4j blast radius | **Real** — live Cypher traversal |
+| Test coverage detection | **Partial** — `TESTED_BY` relationship not yet ingested; always returns False |
+| Symbol `kind` / `file` in tables | **Partial** — ingested under different property names; columns show `unknown`/blank |
 | Risk scoring | **Real** — deterministic formula |
-| LLM explanation | **Real** when `ANTHROPIC_API_KEY` is set; template fallback otherwise |
-| PR description | **Real** when `ANTHROPIC_API_KEY` is set; template fallback otherwise |
-
----
-
-## Swapping in real Neo4j (P2 handoff)
-
-In `codepulse/graph/queries.py`, set `_MOCK_MODE = False` (it happens automatically when `NEO4J_URI` env var is set) and fill in:
-
-```python
-def _neo4j_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSymbol]:
-    # Replace with real Cypher query using neo4j driver
-    ...
-
-def _neo4j_has_tests(symbol_name: str) -> bool:
-    # Replace with real Cypher query
-    ...
-```
-
-The pipeline won't change — only these two functions.
-
----
-
-## Adding a real demo repo
-
-For the best demo, point at a real codebase with multiple commits:
-
-```bash
-git clone https://github.com/some/real-repo /tmp/demo-repo
-cd /tmp/demo-repo
-
-# Make a small change
-# e.g. edit a core service class
-
-git add . && git commit -m "test: tweak payment logic"
-
-python -m codepulse.cli.main diff HEAD~1 --repo . --pr
-```
+| LLM explanation | **Real** with `ANTHROPIC_API_KEY`; template fallback without |
+| Docker for Neo4j | **Planned** — Docker Desktop install required (blocked on admin elevation) |
 
 The more the repo has been indexed in Neo4j, the richer the downstream impact will be.
