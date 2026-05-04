@@ -15,6 +15,133 @@ In a **git** repository, graph ingestion with `--to-graph` records **commit-by-c
 - **Incremental indexing** — SHA-256 hash check skips unchanged files on re-index
 - **Repo registry** — tracks all indexed repos with stats in a local SQLite database
 - **CLI tool** — works globally from any project directory (like `git`)
+- **REST API + Swagger UI** — FastAPI server exposes graph queries, diff analysis, and chat
+- **LangGraph multi-agent pipeline** — change_investigator → risk_analyst → explainer
+
+---
+
+## Demo (5-minute walkthrough)
+
+This walks through a live demo against a real codebase already indexed into Neo4j (7.5k files, 50k symbols, 1.5M relationships).
+
+### 0. One-time setup — start Neo4j + the API server
+
+You need two long-running processes. Open two terminals.
+
+**Terminal A — Neo4j** (Java 21 portable + Neo4j Community 5.24 zip works without admin):
+
+```powershell
+# Windows / PowerShell
+$env:JAVA_HOME = "C:\Users\<you>\codepulse_tools\jdk\jdk-21.0.5+11"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+& "C:\Users\<you>\codepulse_tools\neo4j\neo4j-community-5.24.0\bin\neo4j.bat" console
+```
+
+```bash
+# Or with Docker (any OS)
+docker run -d --name neo4j-codepulse \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/neo4jadmin neo4j:5.24
+```
+
+**Terminal B — CodePulse API server**:
+
+```powershell
+$env:CODEPULSE_NEO4J_URI = "bolt://localhost:7687"
+$env:CODEPULSE_NEO4J_USER = "neo4j"
+$env:CODEPULSE_NEO4J_PASSWORD = "neo4jadmin"
+cd <path-to-codepulse>
+python -m uvicorn codepulse.api.server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Smoke check: `Invoke-RestMethod http://127.0.0.1:8000/health` → `status: ok`.
+
+Open these tabs:
+- **Neo4j Browser:** http://localhost:7474 (login `neo4j` / `neo4jadmin`)
+- **Swagger UI:** http://localhost:8000/docs
+
+### 1. Index a repo into Neo4j
+
+```powershell
+python -m codepulse.cli.main index "C:\path\to\your-repo" --to-graph --full
+```
+
+Expected output (real numbers from the Voyager UI repo):
+```
+Neo4j ingestion complete:
+  Files: 7517
+  Symbols: 50805
+  Packages: 10537
+  Relationships: 1473887
+```
+
+### 2. Show the graph (Neo4j Browser — visual wow)
+
+In http://localhost:7474, paste:
+
+```cypher
+// Schema overview
+CALL db.schema.visualization()
+```
+
+Then a real blast-radius subgraph for a heavily-called symbol:
+
+```cypher
+MATCH path = (caller:Symbol)-[:CALLS*1..2]->(target:Symbol {name: "getActualUrl"})
+RETURN path LIMIT 50
+```
+
+Find heavy-hitter symbols to demo on:
+
+```cypher
+MATCH (s:Symbol)<-[:CALLS]-(other)
+RETURN s.name AS name, count(other) AS callers
+ORDER BY callers DESC LIMIT 10
+```
+
+### 3. Hit the REST API
+
+In Swagger UI (http://localhost:8000/docs), or via curl/PowerShell:
+
+```powershell
+# Real blast-radius — pulls live from Neo4j
+Invoke-RestMethod "http://127.0.0.1:8000/graph/blast-radius?symbol=getActualUrl&max_depth=2"
+
+# Test-coverage check
+Invoke-RestMethod "http://127.0.0.1:8000/graph/test-coverage?symbol=getActualUrl"
+
+# Conversational Q&A (template fallback if ANTHROPIC_API_KEY is unset)
+$body = @{question="Should I be worried about changing handleError?"; symbol_hint="handleError"} | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8000/chat/ -Method Post -Body $body -ContentType application/json
+
+# Run the full risk pipeline on the last commit
+$body = @{repo_path="C:\path\to\your-repo"; commit_ref="HEAD~1"} | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8000/analysis/diff -Method Post -Body $body -ContentType application/json
+```
+
+### 4. CLI demo — diff analysis with rich output
+
+```powershell
+python -m codepulse.cli.main diff HEAD~1 --repo "C:\path\to\your-repo" --pr
+```
+
+This:
+1. Parses the last commit's diff
+2. Extracts changed symbols (Python, TS, JS)
+3. Queries Neo4j for blast radius
+4. Scores risk (low / medium / high) deterministically
+5. Generates an explanation + PR description (LLM-backed if `ANTHROPIC_API_KEY` is set, template fallback otherwise)
+
+### 5. (Optional) Enable LLM-backed answers
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+# Restart the API server; chat + explainer now use Claude instead of templates
+```
+
+### Demo talk-track (60s)
+
+> "CodePulse indexes a codebase into a Neo4j knowledge graph, then uses LangGraph agents to answer the one question every reviewer cares about: **if I change this function, what else breaks?** Here's the Voyager UI codebase — 7.5k files, 50k symbols, 1.5M call/import edges, indexed in ~12 minutes. Every node is a real symbol parsed by tree-sitter. Every edge is a real relationship. The REST API exposes blast-radius queries; the CLI runs the full risk pipeline on a git diff; the LangGraph agents stitch the data into a plain-English risk summary."
 
 ## Architecture
 
@@ -122,6 +249,38 @@ Wipe all nodes and relationships from Neo4j. Does **not** affect SQLite.
 ```bash
 codepulse graph clear
 ```
+
+### `codepulse diff`
+
+Run blast-radius + risk analysis on a git diff. Calls the LangGraph pipeline.
+
+```bash
+codepulse diff                                  # diff HEAD~1 in current dir
+codepulse diff HEAD~3                           # diff 3 commits back
+codepulse diff abc123 --repo /path/to/repo      # specific SHA + explicit repo
+codepulse diff HEAD~1 --pr                      # also print generated PR description
+codepulse diff HEAD~1 --json                    # raw JSON output
+```
+
+### `codepulse ui`
+
+Start the FastAPI REST server (Swagger UI at `/docs`).
+
+```bash
+codepulse ui                                    # http://127.0.0.1:8000
+codepulse ui --port 9000 --no-reload
+```
+
+Endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/health`                  | Liveness check |
+| GET  | `/repos/`                  | List indexed repos |
+| GET  | `/graph/blast-radius`      | `?symbol=X&max_depth=N` — downstream impact |
+| GET  | `/graph/test-coverage`     | `?symbol=X` — does it have tests? |
+| POST | `/analysis/diff`           | `{repo_path, commit_ref}` — full risk pipeline |
+| POST | `/chat/`                   | `{question, symbol_hint?}` — Q&A over the graph |
 
 ### `codepulse help`
 
