@@ -153,6 +153,22 @@ Start-Process "http://127.0.0.1:8000/docs"
 
 **Key proof:** `/graph/blast-radius?symbol=getActualUrl` returns **count=200** — mock mode for this symbol returns 0.
 
+### Step 4.5 — Web Frontend
+
+With the backend running, start the Streamlit frontend in another terminal:
+```powershell
+streamlit run ui/app.py
+```
+
+This opens a web interface at `http://localhost:8501` with tabs for all API endpoints:
+- **Health**: Check server status
+- **Repos**: View indexed repositories
+- **Graph**: Query blast radius and test coverage
+- **Chat**: Ask questions about the codebase
+- **Analysis**: Analyze git diffs for risk assessment
+
+**Note:** Ensure the backend is running on `http://127.0.0.1:8000` (or update the Base URL in the sidebar if different).
+
 ---
 
 ### Step 5 — Chat endpoint (graph-enriched Q&A)
