@@ -1,12 +1,14 @@
 """
-P4 — LangGraph pipeline wiring.
+LangGraph pipeline wiring.
 
 Defines and compiles the StateGraph:
 
-    START → investigator → risk_analyst → explainer → END
+    START → investigator → [conditional] → explainer → pr_writer → END
 
-The graph also has one conditional edge: if no changed_symbols are
-present in the initial state, the pipeline skips to END immediately.
+Conditional routing:
+  - If blast radius < 5 symbols → skip risk_analyst and test_advisor,
+    set LOW risk, go straight to explainer → pr_writer.
+  - Otherwise → risk_analyst → test_advisor → explainer → pr_writer.
 
 Public entry point:
     from codepulse.agents.pipeline import run_pipeline
@@ -14,9 +16,8 @@ Public entry point:
     result = run_pipeline(
         repo_path="./my-repo",
         commit_ref="HEAD~1",
-        changed_symbols=changed,   # list[ChangedSymbol] from P3
+        changed_symbols=changed,
     )
-    # result is a RiskResult TypedDict
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ from langgraph.graph import StateGraph, START, END
 from codepulse.agents.state import AgentState, RiskResult
 from codepulse.agents.change_investigator import investigator_node
 from codepulse.agents.risk_analyst import risk_analyst_node
+from codepulse.agents.test_advisor import test_advisor_node
 from codepulse.agents.explainer import explainer_node
+from codepulse.agents.pr_writer import pr_writer_node
 
 
 # ── Conditional routing ───────────────────────────────────────────────────────
@@ -38,6 +41,14 @@ def _route_start(state: AgentState) -> str:
     return "investigator"
 
 
+def _route_after_investigator(state: AgentState) -> str:
+    """Skip risk_analyst when blast radius is small (< 5 symbols)."""
+    fan_out = state.get("fan_out_count", 0)
+    if fan_out < 5:
+        return "test_advisor"
+    return "risk_analyst"
+
+
 # ── Graph definition ──────────────────────────────────────────────────────────
 
 def _build_graph() -> StateGraph:
@@ -45,14 +56,24 @@ def _build_graph() -> StateGraph:
 
     builder.add_node("investigator", investigator_node)
     builder.add_node("risk_analyst", risk_analyst_node)
+    builder.add_node("test_advisor", test_advisor_node)
     builder.add_node("explainer", explainer_node)
+    builder.add_node("pr_writer", pr_writer_node)
 
     # Conditional start: skip everything if no changed symbols
     builder.add_conditional_edges(START, _route_start, {"investigator": "investigator", END: END})
 
-    builder.add_edge("investigator", "risk_analyst")
-    builder.add_edge("risk_analyst", "explainer")
-    builder.add_edge("explainer", END)
+    # After investigator: skip risk_analyst for low-impact changes
+    builder.add_conditional_edges(
+        "investigator",
+        _route_after_investigator,
+        {"risk_analyst": "risk_analyst", "test_advisor": "test_advisor"},
+    )
+
+    builder.add_edge("risk_analyst", "test_advisor")
+    builder.add_edge("test_advisor", "explainer")
+    builder.add_edge("explainer", "pr_writer")
+    builder.add_edge("pr_writer", END)
 
     return builder.compile()
 
@@ -75,12 +96,12 @@ def run_pipeline(
     ----------
     repo_path       : absolute or relative path to the git repo
     commit_ref      : git ref to diff against, e.g. "HEAD~1" or a SHA
-    changed_symbols : list[ChangedSymbol] produced by P3's resolve_diff()
+    changed_symbols : list[ChangedSymbol] produced by resolve_diff()
 
     Returns
     -------
     RiskResult with score, level, reasons, explanation, pr_description,
-    impacted_symbols, and changed_symbols.
+    impacted_symbols, changed_symbols, test_gaps, tests_to_run.
     """
     initial_state: AgentState = {
         "repo_path": repo_path,
@@ -98,4 +119,6 @@ def run_pipeline(
         pr_description=final_state.get("pr_description", ""),
         impacted_symbols=final_state.get("impacted_symbols", []),
         changed_symbols=final_state.get("changed_symbols", []),
+        test_gaps=final_state.get("test_gaps", []),
+        tests_to_run=final_state.get("tests_to_run", []),
     )

@@ -331,6 +331,16 @@ class GraphMapper:
         if "()." in text:
             text = text.split("().", 1)[0]
         if "." in text:
+            # For instance.method patterns (e.g. paymentService.chargeCard),
+            # try resolving the method name part against known symbols
+            method_part = text.rsplit(".", 1)[-1]
+            resolved = same_file.get(method_part) or all_by_name.get(method_part)
+            if resolved:
+                return resolved
+            # Also try the full dotted name
+            resolved = same_file.get(text) or all_by_name.get(text)
+            if resolved:
+                return resolved
             return text
         return same_file.get(text) or all_by_name.get(text) or text
 
@@ -339,25 +349,20 @@ class Neo4jSchema:
     @staticmethod
     def constraints() -> list[str]:
         return [
-            "CREATE CONSTRAINT commit_repo_id_unique IF NOT EXISTS FOR (c:Commit) REQUIRE (c.repo_id, c.id) IS UNIQUE",
-            "CREATE CONSTRAINT change_repo_commit_file_unique IF NOT EXISTS FOR (c:Change) REQUIRE (c.repo_id, c.commit_id, c.file_path) IS UNIQUE",
-            "CREATE CONSTRAINT file_repo_commit_path_unique IF NOT EXISTS FOR (f:File) REQUIRE (f.repo_id, f.commit_id, f.path) IS UNIQUE",
-            "CREATE CONSTRAINT symbol_repo_commit_qname_unique IF NOT EXISTS FOR (s:Symbol) REQUIRE (s.repo_id, s.commit_id, s.qualified_name) IS UNIQUE",
-            "CREATE CONSTRAINT package_repo_commit_name_unique IF NOT EXISTS FOR (p:Package) REQUIRE (p.repo_id, p.commit_id, p.name) IS UNIQUE",
+            "CREATE CONSTRAINT repo_id_unique IF NOT EXISTS FOR (r:Repo) REQUIRE r.id IS UNIQUE",
+            "CREATE CONSTRAINT file_repo_path_unique IF NOT EXISTS FOR (f:File) REQUIRE (f.repo_id, f.path) IS UNIQUE",
+            "CREATE CONSTRAINT symbol_repo_qname_unique IF NOT EXISTS FOR (s:Symbol) REQUIRE (s.repo_id, s.qualified_name) IS UNIQUE",
+            "CREATE CONSTRAINT package_repo_name_unique IF NOT EXISTS FOR (p:Package) REQUIRE (p.repo_id, p.name) IS UNIQUE",
         ]
 
     @staticmethod
     def indexes() -> list[str]:
         return [
-            # Repo-specific indexes for performance
-            "CREATE INDEX symbol_repo_commit_name IF NOT EXISTS FOR (s:Symbol) ON (s.repo_id, s.commit_id, s.name)",
-            "CREATE INDEX symbol_repo_file_deleted IF NOT EXISTS FOR (s:Symbol) ON (s.repo_id, s.file_path, s.deleted)",
-            "CREATE INDEX file_repo_commit_path IF NOT EXISTS FOR (f:File) ON (f.repo_id, f.commit_id, f.path)",
-            "CREATE INDEX package_repo_commit_name IF NOT EXISTS FOR (p:Package) ON (p.repo_id, p.commit_id, p.name)",
-            "CREATE INDEX repo_id IF NOT EXISTS FOR (r:Repo) ON (r.id)",
-            "CREATE INDEX commit_repo_id IF NOT EXISTS FOR (c:Commit) ON (c.repo_id, c.id)",
-            "CREATE INDEX change_repo_commit_type IF NOT EXISTS FOR (c:Change) ON (c.repo_id, c.commit_id, c.type)",
-            # Language/type indexes
+            "CREATE INDEX symbol_repo_name IF NOT EXISTS FOR (s:Symbol) ON (s.repo_id, s.name)",
+            "CREATE INDEX symbol_file_path IF NOT EXISTS FOR (s:Symbol) ON (s.repo_id, s.file_path)",
+            "CREATE INDEX symbol_deleted IF NOT EXISTS FOR (s:Symbol) ON (s.repo_id, s.deleted)",
+            "CREATE INDEX file_repo_path IF NOT EXISTS FOR (f:File) ON (f.repo_id, f.path)",
+            "CREATE INDEX package_repo_name IF NOT EXISTS FOR (p:Package) ON (p.repo_id, p.name)",
             "CREATE INDEX file_language IF NOT EXISTS FOR (f:File) ON (f.language)",
             "CREATE INDEX symbol_type IF NOT EXISTS FOR (s:Symbol) ON (s.type)",
         ]
@@ -397,14 +402,13 @@ class IngestQueries:
 
     UPSERT_FILES = """
     UNWIND $files AS file
-    MERGE (f:File {repo_id: file.repo_id, commit_id: file.commit_id, path: file.path})
+    MERGE (f:File {repo_id: file.repo_id, path: file.path})
     SET f.repo = file.repo,
         f.language = file.language,
         f.hash = file.hash,
         f.lines_of_code = file.lines_of_code,
         f.is_test = file.is_test,
         f.deleted = false,
-        f.deleted_in_commit = null,
         f.last_indexed = datetime()
     WITH f, file
     MATCH (r:Repo {id: file.repo_id})
@@ -413,7 +417,7 @@ class IngestQueries:
 
     UPSERT_SYMBOLS = """
     UNWIND $symbols AS symbol
-    MERGE (s:Symbol {repo_id: symbol.repo_id, commit_id: symbol.commit_id, qualified_name: symbol.qualified_name})
+    MERGE (s:Symbol {repo_id: symbol.repo_id, qualified_name: symbol.qualified_name})
     SET s.repo = symbol.repo,
         s.name = symbol.name,
         s.type = symbol.type,
@@ -421,13 +425,12 @@ class IngestQueries:
         s.end_line = symbol.end_line,
         s.file_path = symbol.file_path,
         s.is_test = symbol.is_test,
-        s.deleted = false,
-        s.deleted_in_commit = null
+        s.deleted = false
     """
 
     UPSERT_PACKAGES = """
     UNWIND $packages AS pkg
-    MERGE (p:Package {repo_id: pkg.repo_id, commit_id: pkg.commit_id, name: pkg.name})
+    MERGE (p:Package {repo_id: pkg.repo_id, name: pkg.name})
     SET p.repo = pkg.repo,
         p.is_external = pkg.is_external,
         p.is_builtin = pkg.is_builtin
@@ -435,22 +438,22 @@ class IngestQueries:
 
     CREATE_CONTAINS = """
     UNWIND $rels AS rel
-    MATCH (f:File {repo_id: rel.repo_id, commit_id: rel.commit_id, path: rel.from})
-    MATCH (s:Symbol {repo_id: rel.repo_id, commit_id: rel.commit_id, qualified_name: rel.to})
+    MATCH (f:File {repo_id: rel.repo_id, path: rel.from})
+    MATCH (s:Symbol {repo_id: rel.repo_id, qualified_name: rel.to})
     MERGE (f)-[:CONTAINS]->(s)
     """
 
     CREATE_CALLS = """
     UNWIND $rels AS rel
-    MATCH (caller:Symbol {repo_id: rel.repo_id, commit_id: rel.commit_id, qualified_name: rel.from})
-    MATCH (callee:Symbol {repo_id: rel.repo_id, commit_id: rel.commit_id, qualified_name: rel.to})
+    MATCH (caller:Symbol {repo_id: rel.repo_id, qualified_name: rel.from})
+    MATCH (callee:Symbol {repo_id: rel.repo_id, qualified_name: rel.to})
     MERGE (caller)-[:CALLS]->(callee)
     """
 
     CREATE_IMPORTS = """
     UNWIND $rels AS rel
-    MATCH (s:Symbol {repo_id: rel.repo_id, commit_id: rel.commit_id, qualified_name: rel.from})
-    MATCH (p:Package {repo_id: rel.repo_id, commit_id: rel.commit_id, name: rel.to})
+    MATCH (s:Symbol {repo_id: rel.repo_id, qualified_name: rel.from})
+    MATCH (p:Package {repo_id: rel.repo_id, name: rel.to})
     MERGE (s)-[:IMPORTS]->(p)
     """
 
@@ -459,6 +462,5 @@ class IngestQueries:
     WITH ch WHERE ch.type = 'deleted'
     MATCH (s:Symbol {repo_id: ch.repo_id, file_path: ch.file_path})
     WHERE coalesce(s.deleted, false) = false
-    SET s.deleted = true,
-        s.deleted_in_commit = ch.commit_id
+    SET s.deleted = true
     """

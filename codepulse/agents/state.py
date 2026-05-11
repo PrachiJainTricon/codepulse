@@ -53,8 +53,14 @@ class AgentState(TypedDict, total=False):
     level: Literal["low", "medium", "high"]
     reasons: list[str]
 
+    # Test advisor outputs
+    test_gaps: list[str]               # symbols with no test coverage
+    tests_to_run: list[str]            # test files that should be executed
+
     # Explainer output
     explanation: str
+
+    # PR Writer output
     pr_description: str
 
     # Error passthrough (non-fatal, lets pipeline complete with partial results)
@@ -71,3 +77,5 @@ class RiskResult(TypedDict):
     impacted_symbols: list[ImpactedSymbol]
     changed_symbols: list[ChangedSymbol]
     pr_description: str
+    test_gaps: list[str]
+    tests_to_run: list[str]

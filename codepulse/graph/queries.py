@@ -29,9 +29,9 @@ _MOCK_GRAPH: dict[str, list[dict]] = {
     ],
 }
 
-_MOCK_TEST_FILES: dict[str, bool] = {
-    "charge_card": True,
-    "send_receipt": False,
+_MOCK_TEST_COVERAGE: dict[str, list[str]] = {
+    "charge_card": ["tests/test_billing.py"],
+    "create_invoice": ["tests/test_billing.py"],
 }
 
 
@@ -39,25 +39,23 @@ _MOCK_TEST_FILES: dict[str, bool] = {
 
 def _neo4j_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSymbol]:
     """
-    Traverse callers/importers of *symbol_name* up to *max_depth* hops.
-
-    Matches any Symbol whose ``name`` ends with the unqualified identifier
-    (handles repo-id-prefixed qualified_name values stored by the ingester).
+    Traverse callers of *symbol_name* up to *max_depth* hops.
+    Only returns non-deleted symbols from the latest indexed state.
     """
     from codepulse.graph.client import Neo4jClient
 
-    # Cypher disallows parameters inside variable-length path quantifiers,
-    # so the int is validated and inlined.
     depth = max(1, min(int(max_depth), 10))
 
     cypher = f"""
-    MATCH path = (start:Symbol)<-[:CALLS|IMPORTS*1..{depth}]-(other:Symbol)
-    WHERE start.name = $symbol_name OR start.qualified_name ENDS WITH $symbol_name
-    RETURN other.name        AS name,
-           other.file        AS file,
-           other.kind        AS kind,
-           length(path)      AS depth
-    ORDER BY depth
+    MATCH path = (start:Symbol)<-[:CALLS*1..{depth}]-(caller:Symbol)
+    WHERE (start.name = $symbol_name OR start.qualified_name ENDS WITH $symbol_name)
+      AND coalesce(start.deleted, false) = false
+      AND coalesce(caller.deleted, false) = false
+    RETURN DISTINCT caller.name        AS name,
+           caller.file_path    AS file,
+           caller.type         AS kind,
+           length(path)        AS depth
+    ORDER BY depth, name
     LIMIT 200
     """
 
@@ -79,24 +77,30 @@ def _neo4j_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSy
     ]
 
 
-def _neo4j_has_tests(symbol_name: str) -> bool:
+def _neo4j_test_coverage(symbol_name: str) -> list[str]:
     """
-    Return True if *symbol_name* has at least one test file linked via
-    a ``TESTED_BY`` relationship in the graph.
+    Return test file paths that cover *symbol_name*.
+    Looks for test files that CALL or CONTAINS a test for this symbol.
     """
     from codepulse.graph.client import Neo4jClient
 
     cypher = """
-    MATCH (s:Symbol)-[:TESTED_BY]->(f:File)
+    MATCH (test:Symbol)-[:CALLS]->(s:Symbol)
     WHERE (s.name = $symbol_name OR s.qualified_name ENDS WITH $symbol_name)
-      AND f.is_test = true
-    RETURN count(f) > 0 AS has_tests
+      AND test.is_test = true
+      AND coalesce(s.deleted, false) = false
+    RETURN DISTINCT test.file_path AS test_file, test.name AS test_name
+    LIMIT 20
     """
 
     def _tx(tx):
-        result = tx.run(cypher, symbol_name=symbol_name)
-        record = result.single()
-        return bool(record["has_tests"]) if record else False
+        return list(tx.run(cypher, symbol_name=symbol_name))
+
+    with Neo4jClient() as client:
+        with client.driver.session(database=client.database) as session:
+            records = session.execute_read(_tx)
+
+    return [str(r["test_file"]) for r in records if r["test_file"]]
 
     with Neo4jClient() as client:
         with client.driver.session(database=client.database) as session:
@@ -108,7 +112,6 @@ def _neo4j_has_tests(symbol_name: str) -> bool:
 def get_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSymbol]:
     """
     Return symbols reachable from symbol_name within max_depth hops.
-
     Uses real Neo4j when NEO4J_URI env var is set; falls back to mock data.
     """
     if not _MOCK_MODE:
@@ -127,8 +130,8 @@ def get_blast_radius(symbol_name: str, max_depth: int = 3) -> list[ImpactedSymbo
     ]
 
 
-def get_test_coverage(symbol_name: str) -> bool:
-    """Return True if the symbol has associated test files in the graph."""
+def get_test_coverage(symbol_name: str) -> list[str]:
+    """Return list of test file paths that cover this symbol."""
     if not _MOCK_MODE:
-        return _neo4j_has_tests(symbol_name)
-    return _MOCK_TEST_FILES.get(symbol_name, False)
+        return _neo4j_test_coverage(symbol_name)
+    return _MOCK_TEST_COVERAGE.get(symbol_name, [])

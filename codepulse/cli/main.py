@@ -9,6 +9,9 @@ Run with:
     codepulse remove /path/to/repo
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import typer
 
 app = typer.Typer(
@@ -25,11 +28,19 @@ from codepulse.cli.repos_cmd import repos_app, repos_remove  # noqa: E402
 from codepulse.cli.graph_cmd import graph_app           # noqa: E402
 from codepulse.cli.diff_cmd import diff_command         # noqa: E402
 from codepulse.cli.ui_cmd import ui_command             # noqa: E402
+from codepulse.cli.ask_cmd import ask_command           # noqa: E402
+from codepulse.cli.chat_cmd import chat_command         # noqa: E402
+from codepulse.cli.report_cmd import report_command     # noqa: E402
+from codepulse.cli.status_cmd import status_command     # noqa: E402
 
 app.command(name="index")(index)
 app.command(name="remove")(repos_remove)      # top-level shortcut
 app.command(name="diff")(diff_command)
 app.command(name="ui")(ui_command)
+app.command(name="ask")(ask_command)
+app.command(name="chat")(chat_command)
+app.command(name="report")(report_command)
+app.command(name="status")(status_command)
 app.add_typer(repos_app, name="repos")
 app.add_typer(graph_app, name="graph")
 

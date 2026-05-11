@@ -34,6 +34,18 @@ _TS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*\w+\s*)?\{"), "method"),
 ]
 
+_JAVA_PATTERNS: list[tuple[re.Pattern, str]] = [
+    # class / interface / enum
+    (re.compile(r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:abstract\s+)?(?:class|interface|enum)\s+(\w+)"), "class"),
+    # method: public void foo(...) {
+    (re.compile(r"^\s*(?:public|private|protected)\s+(?:static\s+)?(?:[\w<>\[\]]+\s+)+(\w+)\s*\("), "method"),
+]
+
+_CPP_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^\s*class\s+(\w+)"), "class"),
+    (re.compile(r"^\s*(?:[\w:*&<>]+\s+)+(\w+)\s*\([^;]*$"), "function"),
+]
+
 
 def _patterns_for(file_path: str) -> list[tuple[re.Pattern, str]]:
     suffix = Path(file_path).suffix.lower()
@@ -41,6 +53,10 @@ def _patterns_for(file_path: str) -> list[tuple[re.Pattern, str]]:
         return _PYTHON_PATTERNS
     if suffix in {".ts", ".tsx", ".js", ".jsx"}:
         return _TS_PATTERNS
+    if suffix == ".java":
+        return _JAVA_PATTERNS
+    if suffix in {".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"}:
+        return _CPP_PATTERNS
     return []
 
 
