@@ -1,20 +1,258 @@
-# Codepulse
+# CodePulse
 
-**Code intelligence powered by graph analysis.**
+**Know what breaks before you push.**
 
-codepulse indexes any codebase into a knowledge graph, then uses AI agents to analyze blast radius of changes, score risk, suggest tests, and generate PR descriptions.
+CodePulse indexes any codebase into a Neo4j knowledge graph (files → symbols → calls → tests), then uses AI agents to answer the question every reviewer cares about: _"if I change this function, what else breaks?"_
 
-In a **git** repository, graph ingestion with `--to-graph` records **commit-by-commit** context (per-commit nodes and, when the diff has files, change records). The graph is also intended as a **retrieval foundation** for future agents and tools that need structural code context.
+```
+codepulse index /path/to/project --to-graph   # parse + push to Neo4j
+codepulse diff HEAD~1 --pr                     # blast radius + risk + PR description
+codepulse ask "what calls authenticate"        # natural-language graph query
+```
 
 ---
 
-## What it does (so far)
+## Quick Start (5 minutes)
 
-- **Tree-sitter AST parsing** — extracts symbols (classes, functions, methods), imports, function calls, and exports from source files
-- **Multi-language support** — Python, JavaScript, TypeScript, Java, C/C++
-- **Incremental indexing** — SHA-256 hash check skips unchanged files on re-index
-- **Repo registry** — tracks all indexed repos with stats in a local SQLite database
-- **CLI tool** — works globally from any project directory (like `git`)
+### 1. Install
+
+```bash
+git clone https://github.com/your-org/codepulse.git
+cd codepulse
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e "."
+```
+
+Verify: `codepulse --help`
+
+### 2. Start Neo4j
+
+```bash
+docker run -d --name neo4j-codepulse \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/neo4jadmin neo4j:5
+```
+
+### 3. Set environment variables
+
+```bash
+export CODEPULSE_NEO4J_URI="bolt://localhost:7687"
+export CODEPULSE_NEO4J_USER="neo4j"
+export CODEPULSE_NEO4J_PASSWORD="neo4jadmin"
+
+# For AI-powered explanations (optional — template fallback works without it)
+export CODEPULSE_LLM_PROVIDER="groq"          # or: anthropic, openai, gemini
+export GROQ_API_KEY="gsk_..."                  # key for your chosen provider
+```
+
+### 4. Index your project
+
+```bash
+cd /path/to/your/project
+codepulse index --to-graph --full
+```
+
+This parses every file (tree-sitter AST), extracts symbols/calls/imports, and pushes everything to Neo4j.
+
+### 5. Analyze a change
+
+```bash
+codepulse diff HEAD~1 --pr
+```
+
+Output includes:
+- **Changed symbols** extracted from the git diff
+- **Blast radius** — downstream symbols impacted (via CALLS edges in the graph)
+- **Risk score** (low / medium / high)
+- **Test recommendations** — which tests to run, which gaps exist
+- **AI explanation** — numbered impact paths with reasoning
+- **PR description** — ready to paste into your pull request
+
+### 6. Ask questions
+
+```bash
+codepulse ask "what calls chargeCard in PaymentService"
+codepulse ask "show the dependency chain from OrderService to AuthService"
+codepulse chat   # interactive REPL
+```
+
+---
+
+## What it does
+
+| Feature | Description |
+|---------|-------------|
+| **Tree-sitter AST parsing** | Extracts symbols (classes, functions, methods), imports, calls, exports |
+| **Multi-language** | Python, JavaScript/TypeScript, Java, C/C++ |
+| **Incremental indexing** | SHA-256 hash check skips unchanged files |
+| **Neo4j knowledge graph** | Symbols + call relationships as a queryable graph |
+| **Blast radius analysis** | Traces downstream impact via CALLS edges |
+| **LangGraph agent pipeline** | investigator → risk_analyst → test_advisor → explainer → pr_writer |
+| **Test gap detection** | Identifies symbols with no test coverage |
+| **PR description generation** | AI-generated summary of changes, impact, and risk |
+| **REST API + Swagger UI** | FastAPI server for programmatic access |
+| **Interactive chat** | Natural-language Q&A over your code graph |
+
+## All Commands
+
+| Command | What it does |
+|---------|-------------|
+| `codepulse index [path]` | Parse files into SQLite (incremental by default) |
+| `codepulse index --to-graph` | Also push to Neo4j |
+| `codepulse index --full --to-graph` | Full re-parse + push everything |
+| `codepulse diff [ref]` | Blast radius + risk analysis on a git diff |
+| `codepulse diff HEAD~1 --pr` | Include generated PR description |
+| `codepulse diff HEAD~1 --json` | Machine-readable JSON output |
+| `codepulse ask "question"` | Single-shot question against the graph |
+| `codepulse chat` | Interactive REPL for follow-up questions |
+| `codepulse repos` | List all indexed repos with stats |
+| `codepulse remove [path]` | Unregister repo from SQLite (not Neo4j) |
+| `codepulse graph clear` | Wipe all Neo4j data |
+| `codepulse status` | Show current configuration |
+| `codepulse ui` | Start the REST API server |
+
+---
+
+## Typical Workflow
+
+```bash
+# First time — index your project into the graph
+cd /path/to/project
+codepulse index --to-graph --full
+
+# Daily workflow — after making changes
+codepulse index --to-graph          # push only changed files
+codepulse diff HEAD~1 --pr          # analyze your latest commit
+
+# Before code review
+codepulse ask "what tests cover checkout"
+codepulse diff HEAD~3 --pr          # analyze last 3 commits
+```
+
+---
+
+## Demo (extended walkthrough)
+
+This walks through a live demo against a real codebase already indexed into Neo4j (7.5k files, 50k symbols, 1.5M relationships).
+
+### 0. One-time setup — start Neo4j + the API server
+
+You need two long-running processes. Open two terminals.
+
+**Terminal A — Neo4j** (Java 21 portable + Neo4j Community 5.24 zip works without admin):
+
+```powershell
+# Windows / PowerShell
+$env:JAVA_HOME = "C:\Users\<you>\codepulse_tools\jdk\jdk-21.0.5+11"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+& "C:\Users\<you>\codepulse_tools\neo4j\neo4j-community-5.24.0\bin\neo4j.bat" console
+```
+
+```bash
+# Or with Docker (any OS)
+docker run -d --name neo4j-codepulse \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/neo4jadmin neo4j:5.24
+```
+
+**Terminal B — CodePulse API server**:
+
+```powershell
+$env:CODEPULSE_NEO4J_URI = "bolt://localhost:7687"
+$env:CODEPULSE_NEO4J_USER = "neo4j"
+$env:CODEPULSE_NEO4J_PASSWORD = "neo4jadmin"
+cd <path-to-codepulse>
+python -m uvicorn codepulse.api.server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Smoke check: `Invoke-RestMethod http://127.0.0.1:8000/health` → `status: ok`.
+
+Open these tabs:
+- **Neo4j Browser:** http://localhost:7474 (login `neo4j` / `neo4jadmin`)
+- **Swagger UI:** http://localhost:8000/docs
+
+### 1. Index a repo into Neo4j
+
+```powershell
+python -m codepulse.cli.main index "C:\path\to\your-repo" --to-graph --full
+```
+
+Expected output (real numbers from the Voyager UI repo):
+```
+Neo4j ingestion complete:
+  Files: 7517
+  Symbols: 50805
+  Packages: 10537
+  Relationships: 1473887
+```
+
+### 2. Show the graph (Neo4j Browser — visual wow)
+
+In http://localhost:7474, paste:
+
+```cypher
+// Schema overview
+CALL db.schema.visualization()
+```
+
+Then a real blast-radius subgraph for a heavily-called symbol:
+
+```cypher
+MATCH path = (caller:Symbol)-[:CALLS*1..2]->(target:Symbol {name: "getActualUrl"})
+RETURN path LIMIT 50
+```
+
+Find heavy-hitter symbols to demo on:
+
+```cypher
+MATCH (s:Symbol)<-[:CALLS]-(other)
+RETURN s.name AS name, count(other) AS callers
+ORDER BY callers DESC LIMIT 10
+```
+
+### 3. Hit the REST API
+
+In Swagger UI (http://localhost:8000/docs), or via curl/PowerShell:
+
+```powershell
+# Real blast-radius — pulls live from Neo4j
+Invoke-RestMethod "http://127.0.0.1:8000/graph/blast-radius?symbol=getActualUrl&max_depth=2"
+
+# Test-coverage check
+Invoke-RestMethod "http://127.0.0.1:8000/graph/test-coverage?symbol=getActualUrl"
+
+# Conversational Q&A (template fallback if ANTHROPIC_API_KEY is unset)
+$body = @{question="Should I be worried about changing handleError?"; symbol_hint="handleError"} | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8000/chat/ -Method Post -Body $body -ContentType application/json
+
+# Run the full risk pipeline on the last commit
+$body = @{repo_path="C:\path\to\your-repo"; commit_ref="HEAD~1"} | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8000/analysis/diff -Method Post -Body $body -ContentType application/json
+```
+
+### 4. CLI demo — diff analysis with rich output
+
+```powershell
+python -m codepulse.cli.main diff HEAD~1 --repo "C:\path\to\your-repo" --pr
+```
+
+This:
+1. Parses the last commit's diff
+2. Extracts changed symbols (Python, TS, JS)
+3. Queries Neo4j for blast radius
+4. Scores risk (low / medium / high) deterministically
+5. Generates an explanation + PR description (LLM-backed if `ANTHROPIC_API_KEY` is set, template fallback otherwise)
+
+### 5. (Optional) Enable LLM-backed answers
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+# Restart the API server; chat + explainer now use Claude instead of templates
+```
+
+### Demo talk-track (60s)
+
+> "CodePulse indexes a codebase into a Neo4j knowledge graph, then uses LangGraph agents to answer the one question every reviewer cares about: **if I change this function, what else breaks?** Here's the Voyager UI codebase — 7.5k files, 50k symbols, 1.5M call/import edges, indexed in ~12 minutes. Every node is a real symbol parsed by tree-sitter. Every edge is a real relationship. The REST API exposes blast-radius queries; the CLI runs the full risk pipeline on a git diff; the LangGraph agents stitch the data into a plain-English risk summary."
 
 ## Architecture
 
@@ -123,6 +361,38 @@ Wipe all nodes and relationships from Neo4j. Does **not** affect SQLite.
 codepulse graph clear
 ```
 
+### `codepulse diff`
+
+Run blast-radius + risk analysis on a git diff. Calls the LangGraph pipeline.
+
+```bash
+codepulse diff                                  # diff HEAD~1 in current dir
+codepulse diff HEAD~3                           # diff 3 commits back
+codepulse diff abc123 --repo /path/to/repo      # specific SHA + explicit repo
+codepulse diff HEAD~1 --pr                      # also print generated PR description
+codepulse diff HEAD~1 --json                    # raw JSON output
+```
+
+### `codepulse ui`
+
+Start the FastAPI REST server (Swagger UI at `/docs`).
+
+```bash
+codepulse ui                                    # http://127.0.0.1:8000
+codepulse ui --port 9000 --no-reload
+```
+
+Endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/health`                  | Liveness check |
+| GET  | `/repos/`                  | List indexed repos |
+| GET  | `/graph/blast-radius`      | `?symbol=X&max_depth=N` — downstream impact |
+| GET  | `/graph/test-coverage`     | `?symbol=X` — does it have tests? |
+| POST | `/analysis/diff`           | `{repo_path, commit_ref}` — full risk pipeline |
+| POST | `/chat/`                   | `{question, symbol_hint?}` — Q&A over the graph |
+
 ### `codepulse help`
 
 ```bash
@@ -139,8 +409,21 @@ codepulse/
 ├── cli/                    # CLI commands (thin wrappers over services)
 │   ├── main.py             # Typer app entry point
 │   ├── index_cmd.py        # codepulse index
+│   ├── diff_cmd.py         # codepulse diff (blast radius + risk)
+│   ├── ask_cmd.py          # codepulse ask (single-shot Q&A)
+│   ├── chat_cmd.py         # codepulse chat (interactive REPL)
 │   ├── graph_cmd.py        # codepulse graph (e.g. clear Neo4j)
 │   └── repos_cmd.py        # codepulse repos / remove
+├── agents/                 # LangGraph multi-agent pipeline
+│   ├── pipeline.py         # StateGraph wiring (5 nodes + conditional routing)
+│   ├── state.py            # AgentState / RiskResult TypedDicts
+│   ├── change_investigator.py  # Queries Neo4j for blast radius
+│   ├── risk_analyst.py     # Scores risk from fan-out + coverage gaps
+│   ├── test_advisor.py     # Identifies test gaps and required test runs
+│   ├── explainer.py        # LLM-backed impact path explanation
+│   ├── pr_writer.py        # Generates PR description
+│   ├── chat_agent.py       # Q&A agent for ask/chat commands
+│   └── prompts/            # Separated prompt templates
 ├── indexer/                # Core indexing pipeline
 │   ├── index_service.py    # Orchestrator — run_index() returns IndexReport
 │   ├── repo_scanner.py     # Walk file tree, respect .gitignore
@@ -153,21 +436,34 @@ codepulse/
 │   ├── typescript_parser.py# TypeScript/JavaScript (.ts/.js/.tsx/.jsx)
 │   ├── java_parser.py      # Java (.java)
 │   └── cpp_parser.py       # C/C++ (.cpp/.c/.h/.hpp)
+├── git/                    # Git helpers
+│   ├── diff_resolver.py    # Extract changed symbols from git diff
+│   ├── symbol_diff.py      # Regex-based symbol detection from patch lines
+│   ├── repo_identity.py    # Stable repo ID generation
+│   └── commit_meta.py      # Commit context resolution
+├── graph/                  # Neo4j layer
+│   ├── client.py           # Neo4jClient + Neo4jIngestion
+│   ├── schema.py           # Node dataclasses, constraints, Cypher queries
+│   ├── payload.py          # build_graph_payload (ParseResult → ingestion JSON)
+│   ├── queries.py          # get_blast_radius, get_test_coverage
+│   └── subgraph.py         # Subgraph extraction for LLM context
 ├── db/                     # SQLite storage
 │   ├── models.py           # Table schemas (repos, file_snapshots)
 │   ├── migrations.py       # Schema creation
 │   └── run_store.py        # RepoStore — CRUD for repo registry
-├── config.py               # Central settings
+├── api/                    # FastAPI REST server
+│   └── routes/             # /analysis, /chat, /graph, /repos
+├── config.py               # Central settings (env vars)
+├── llm.py                  # Multi-provider LLM wrapper
 └── logging.py              # Rich-based logging
 ```
 
 ## What's next
 
-- **Neo4j graph writer** — persist ParseResults as nodes + edges
-- **Graph queries** — "who calls function X", blast radius traversal
-- **Diff analysis** — extract changed symbols from git diff
-- **LangGraph agents** — Change Investigator, Risk Analyst, Explainer, PR Writer
-- **Web UI** — React dashboard with graph explorer and chat interface
+- **Web UI** — React dashboard with graph explorer and live chat
+- **CI integration** — GitHub Action that runs `codepulse diff` on PRs and posts a comment
+- **Cross-repo analysis** — trace dependencies across microservices
+- **Coverage integration** — ingest actual test coverage data (lcov/jacoco) for precise gap detection
 
 ---
 
@@ -218,6 +514,7 @@ codepulse remove /path/to/repo          # unregister + clear local snapshot (doe
 
 ### Configuration (environment variables)
 
+**Neo4j connection:**
 
 | Variable                   | Default                                |
 | -------------------------- | -------------------------------------- |
@@ -225,6 +522,18 @@ codepulse remove /path/to/repo          # unregister + clear local snapshot (doe
 | `CODEPULSE_NEO4J_USER`     | `neo4j`                                |
 | `CODEPULSE_NEO4J_PASSWORD` | `neo4jadmin`                           |
 | `CODEPULSE_DATA_DIR`       | `~/.codepulse` (SQLite snapshot cache) |
+
+**LLM provider (for explanations, PR descriptions, and chat):**
+
+| Variable                   | Example                                |
+| -------------------------- | -------------------------------------- |
+| `CODEPULSE_LLM_PROVIDER`   | `groq` / `anthropic` / `openai` / `gemini` |
+| `GROQ_API_KEY`             | `gsk_...`                              |
+| `ANTHROPIC_API_KEY`        | `sk-ant-...`                           |
+| `OPENAI_API_KEY`           | `sk-...`                               |
+| `GOOGLE_API_KEY`           | `AI...`                                |
+
+If no API key is set, CodePulse uses a template-based fallback (no LLM calls) — the blast radius, risk score, and test gap detection still work fully.
 
 
 Neo4j browser: [http://localhost:7474](http://localhost:7474)
@@ -249,9 +558,9 @@ Every node carries a `repo_id` (stable SHA-1 of the git remote URL, or of the ab
 | `Repo`    | `id`                                   |
 | `Commit`  | `(repo_id, id)`                        |
 | `Change`  | `(repo_id, commit_id, file_path)`      |
-| `File`    | `(repo_id, commit_id, path)`           |
-| `Symbol`  | `(repo_id, commit_id, qualified_name)` |
-| `Package` | `(repo_id, commit_id, name)`           |
+| `File`    | `(repo_id, path)`                      |
+| `Symbol`  | `(repo_id, qualified_name)`            |
+| `Package` | `(repo_id, name)`                      |
 
 
 `Symbol.qualified_name` is prefixed with `repo_id` (for example `a1b2c3d4e5.codepulse.cli.index_cmd.index`) so names do not clash across repos. The human-readable name is on the `repo` property.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from codepulse.git._gitcli import git_output
+from codepulse.git._gitcli import git_output, is_git_repo
 from codepulse.indexer.language_detector import detect_language
 
 
@@ -82,3 +82,99 @@ def _status_to_type(status: str) -> str | None:
     if status in {"R", "C"}:
         return "modified"
     return None
+
+
+# ── High-level adapter ────────────────────────────────────────────────────────
+
+def resolve_diff(repo_path: str, commit_ref: str = "HEAD~1") -> list:
+    """
+    Return a list of ``ChangedSymbol`` objects for every function/class
+    touched by *commit_ref* relative to its parent.
+
+    Uses ``git diff <commit_ref>^..<commit_ref>`` to get the patch, then
+    runs symbol extraction on each changed file's hunk lines.
+
+    Raises ``RuntimeError`` if *repo_path* is not a git repository.
+    """
+    from codepulse.agents.state import ChangedSymbol
+    from codepulse.git.symbol_diff import extract_symbols_from_hunk
+
+    root = Path(repo_path)
+    if not is_git_repo(root):
+        raise RuntimeError(f"{repo_path!r} is not a git repository")
+
+    # Get the unified diff for commit_ref vs its parent
+    patch = git_output(root, "diff", f"{commit_ref}^", commit_ref, "-U0")
+    if not patch:
+        # Might be the initial commit — diff against empty tree
+        patch = git_output(
+            root,
+            "diff",
+            "--cached",
+            "4b825dc642cb6eb9a060e54bf8d69288fbee4904",  # empty tree SHA
+            commit_ref,
+            "-U0",
+        )
+    if not patch:
+        return []
+
+    symbols: list[ChangedSymbol] = []
+    current_file: str | None = None
+    added_lines: list[str] = []
+    removed_lines: list[str] = []
+    hunk_start: int | None = None
+
+    def _flush():
+        nonlocal current_file, added_lines, removed_lines, hunk_start
+        if current_file and (added_lines or removed_lines):
+            syms = extract_symbols_from_hunk(
+                current_file, added_lines, removed_lines, hunk_start
+            )
+            # If no symbols detected, fall back to a file-level entry
+            if not syms:
+                # Determine overall change type from lines
+                if added_lines and not removed_lines:
+                    ct = "added"
+                elif removed_lines and not added_lines:
+                    ct = "deleted"
+                else:
+                    ct = "modified"
+                syms = [
+                    ChangedSymbol(
+                        file=current_file,
+                        symbol=Path(current_file).stem,
+                        kind="unknown",
+                        change_type=ct,
+                        start_line=hunk_start,
+                        end_line=None,
+                    )
+                ]
+            symbols.extend(syms)
+        added_lines = []
+        removed_lines = []
+        hunk_start = None
+
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            _flush()
+            # Parse file name: "diff --git a/foo.py b/foo.py"
+            parts = line.split(" b/", 1)
+            current_file = parts[-1].strip() if parts else None
+        elif line.startswith("--- ") or line.startswith("+++ "):
+            continue
+        elif line.startswith("@@"):
+            _flush()
+            # Parse @@ -l,s +l,s @@
+            try:
+                plus_part = line.split("+")[1].split("@@")[0].strip()
+                hunk_start = int(plus_part.split(",")[0])
+            except (IndexError, ValueError):
+                hunk_start = None
+        elif line.startswith("+"):
+            added_lines.append(line[1:])
+        elif line.startswith("-"):
+            removed_lines.append(line[1:])
+
+    _flush()
+    return symbols
+

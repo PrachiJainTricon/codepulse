@@ -67,7 +67,7 @@ class PythonParser(BaseParser):
     # ── Symbol extraction ─────────────────────────────────────
 
     def _extract_symbols(self, root, source: bytes) -> list[SymbolInfo]:
-        """Find all class and function definitions in the AST."""
+        """Find all class, function definitions, and module-level variables."""
         symbols: list[SymbolInfo] = []
 
         for node in self._walk(root):
@@ -101,7 +101,61 @@ class PythonParser(BaseParser):
                         parent=parent,
                     ))
 
+        # Extract module-level variable assignments
+        symbols.extend(self._extract_module_variables(root, source))
+
         return symbols
+
+    def _extract_module_variables(self, root, source: bytes) -> list[SymbolInfo]:
+        """Extract top-level variable assignments (e.g. app = Flask(), chain = a | b)."""
+        variables: list[SymbolInfo] = []
+
+        for node in root.children:
+            if node.type == "expression_statement":
+                # Simple assignment: x = ...
+                expr = node.children[0] if node.children else None
+                if expr and expr.type == "assignment":
+                    names = self._get_assignment_targets(expr, source)
+                    for name in names:
+                        if name and not name.startswith("_"):
+                            variables.append(SymbolInfo(
+                                name=name,
+                                kind=SymbolKind.VARIABLE,
+                                line=node.start_point[0] + 1,
+                                end_line=node.end_point[0] + 1,
+                                parent=None,
+                            ))
+
+            elif node.type == "assignment":
+                names = self._get_assignment_targets(node, source)
+                for name in names:
+                    if name and not name.startswith("_"):
+                        variables.append(SymbolInfo(
+                            name=name,
+                            kind=SymbolKind.VARIABLE,
+                            line=node.start_point[0] + 1,
+                            end_line=node.end_point[0] + 1,
+                            parent=None,
+                        ))
+
+        return variables
+
+    def _get_assignment_targets(self, node, source: bytes) -> list[str]:
+        """Extract variable names from an assignment node's left-hand side."""
+        names: list[str] = []
+        left = node.child_by_field_name("left")
+        if not left:
+            return names
+
+        if left.type == "identifier":
+            names.append(self._node_text(left, source))
+        elif left.type == "pattern_list":
+            # Tuple unpacking: a, b = ...
+            for child in left.children:
+                if child.type == "identifier":
+                    names.append(self._node_text(child, source))
+
+        return names
 
     # ── Import extraction ─────────────────────────────────────
 
